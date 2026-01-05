@@ -5,7 +5,7 @@ from starlette.responses import JSONResponse
 from typing import List, Optional
 from datetime import datetime
 from bson import ObjectId
-from config.configrations import attendance_collection, users_collection, account_collection, class_collection
+from config.configrations import attendance_collection, users_collection, account_collection, class_collection, matkul_collection
 from models.Account import Account
 from models.Users import UserModel
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -50,26 +50,44 @@ async def attendance_report_by_schedule(
     meeting_date: str = Query(..., description="Tanggal pertemuan (YYYY-MM-DD)"),
     current_user: dict = Depends(get_current_user)
 ):
-    jadwal = None
-    for j in current_user.get("jadwal_mengajar", []):
-        if j.get("nama_mk") == course_name:
-            jadwal = j
-            break
-    if not jadwal:
-        raise HTTPException(status_code=404, detail="Course not found in lecturer's schedule")
-    waktu_mulai = jadwal["waktu_mulai"]
-    waktu_selesai = jadwal["waktu_selesai"]
-    class_id = jadwal.get("class_id")
-    if not class_id:
-        raise HTTPException(status_code=400, detail="class_id not found in jadwal_mengajar")
-    # If class_id is already ObjectId, use as is; if string, convert
-    if isinstance(class_id, ObjectId):
-        class_obj_id = class_id
-    else:
+    # Query jadwal berdasarkan nama_matkul dan dosen_id
+    jadwal = matkul_collection.find_one({
+        "nama_matkul": course_name,
+        "account_id": ObjectId(current_user["id"])
+    })
+    
+    print(f"[DEBUG] Retrieved jadwal for course '{course_name}': {jadwal}")
+    
+    # if not jadwal:
+    #     raise HTTPException(
+    #         status_code=404, 
+    #         detail=f"Course '{course_name}' not found in lecturer's schedule YAYA"
+    #     )
+    
+    # Validasi field yang diperlukan
+    if not jadwal.get("jam_awal") or not jadwal.get("jam_akhir"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Schedule is incomplete (missing jam_awal or jam_akhir)"
+        )
+    
+    # Ambil data waktu dan class_id
+    waktu_mulai = jadwal["jam_awal"]
+    waktu_selesai = jadwal["jam_akhir"]
+    
+    # Gunakan _id dari jadwal sebagai class_id (atau sesuaikan dengan struktur Anda)
+    # Jika Anda punya field class_id di jadwal, gunakan itu
+    class_id = jadwal.get("class_id") or jadwal["_id"]
+    
+    # Convert ke ObjectId jika belum
+    if isinstance(class_id, str):
         try:
             class_obj_id = ObjectId(class_id)
         except Exception:
-            raise HTTPException(status_code=400, detail="class_id in jadwal_mengajar is not a valid ObjectId")
+            raise HTTPException(status_code=400, detail="Invalid class_id format")
+    else:
+        class_obj_id = class_id
+    print(f"[DEBUG] Retrieved schedule: course_name={course_name}, meeting_date={meeting_date}, waktu_mulai={waktu_mulai}, waktu_selesai={waktu_selesai}, class_id={class_id}")
     if not class_collection.find_one({"_id": class_obj_id}):
         raise HTTPException(status_code=404, detail="Class not found")
     try:
