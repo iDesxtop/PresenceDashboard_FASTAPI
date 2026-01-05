@@ -235,37 +235,3 @@ async def attendance_report_by_manual(
         "total_attendance": len(results),
         "attendees": results
     }
-
-# ===============================================
-# IGNORE BELOW: Attendance Logging Endpoint
-# ===============================================
-
-class AttendanceLogRequest(BaseModel):
-    user_id: str
-    status: str
-    class_name: str  # Tambahkan field class_name
-
-@router.post("/log")
-async def log_attendance(payload: AttendanceLogRequest):
-    try:
-        user_id_obj = ObjectId(payload.user_id)
-    except InvalidId:
-        return {"status": "failed", "message": "Invalid user_id format"}
-
-    user = users_collection.find_one({"_id": user_id_obj})
-    if not user:
-        return {"status": "failed", "message": "User not found"}
-
-    now = datetime.now(timezone.utc)
-    class_name = payload.class_name  # Dapatkan class_name dari payload
-    attendance_collection.insert_one({
-        "user_id": user_id_obj,
-        "timestamp": now,
-        "status": payload.status,
-        "class_name": class_name  # Simpan class_name ke dalam attendance
-    })
-
-    return {
-        "status": "success",
-        "timestamp": now.isoformat()
-    }

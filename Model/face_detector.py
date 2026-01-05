@@ -28,7 +28,6 @@ class FaceDetector:
         
         # PENTING: Set context
         ctx_id = 0 if use_gpu else -1  # 0 = GPU, -1 = CPU
-        # self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
         # Prepare dengan detection size
         self.app.prepare(ctx_id=ctx_id, det_size=TARGET_FACE_SIZE, det_thresh=DETECTION_THRESHOLD)
         

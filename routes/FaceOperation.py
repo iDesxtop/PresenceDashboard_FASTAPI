@@ -60,31 +60,3 @@ async def register_face_from_folder():
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-@router.post("/face/test_openset_groundtruth")
-async def test_openset_with_groundtruth(payload: GroundTruthTestRequest):
-    """
-    Test open-set accuracy dengan ground truth manual
-    Untuk testing dengan real CCTV frames + unknown people dari LFW
-    """
-    try:
-        print(f"Starting ground truth-based evaluation...")
-        print(f"Ground truth file: {payload.ground_truth_file}")
-        start = timerawal()
-        
-        results = system.test_open_set_with_groundtruth(
-            ground_truth_file=payload.ground_truth_file,
-            threshold=payload.threshold
-        )
-        
-        print("Evaluation completed, waktu yang dibutuhkan:")
-        elapsed = timerstoptampilkantimer(start)
-        
-        return {
-            "status": "success",
-            "message": "Ground truth-based evaluation completed",
-            "data": results,
-            "elapsed_time": elapsed
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))

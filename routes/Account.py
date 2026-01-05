@@ -7,8 +7,8 @@ from config.configrations import account_collection
 from models.Account import LoginRequest, Account
 from bson import ObjectId
 
-SECRET_KEY = "your_secret_key"  # Change this to a secure value!
-ALGORITHM = "HS256"
+SECRET_KEY = "your_secret_key"  # Untuk Token JWT
+ALGORITHM = "HS256" # token juga
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -69,17 +69,17 @@ async def login(login_req: LoginRequest):
         data={"account_id": str(account["_id"]), "jabatan": account["jabatan"]}
     )
     # Prepare user_info to match Account model and ensure all ObjectId are string
-    jadwal_mengajar = account.get("jadwal_mengajar", [])
+    # jadwal_mengajar = account.get("jadwal_mengajar", [])
     # Convert embedded class_id in jadwal_mengajar to string if present
-    for jm in jadwal_mengajar:
-        if "class_id" in jm and isinstance(jm["class_id"], ObjectId):
-            jm["class_id"] = str(jm["class_id"])
+    # for jm in jadwal_mengajar:
+    #     if "class_id" in jm and isinstance(jm["class_id"], ObjectId):
+    #         jm["class_id"] = str(jm["class_id"])
     user_info = {
         "id": str(account["_id"]),
         "nama": account["nama"],
         "akun_upi": account["akun_upi"],
         "jabatan": account["jabatan"],
-        "jadwal_mengajar": jadwal_mengajar
+        # "jadwal_mengajar": jadwal_mengajar
     }
     return {
         "access_token": access_token,

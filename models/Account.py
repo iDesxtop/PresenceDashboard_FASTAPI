@@ -11,7 +11,6 @@ class Account(BaseModel):
     nama: str
     akun_upi: str
     jabatan: str
-    jadwal_mengajar: Optional[List[JadwalMengajar]] = []
 
 class LoginRequest(BaseModel):
     akun_upi: str
