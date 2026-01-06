@@ -5,7 +5,7 @@ from config.configrations import matkul_collection, class_collection
 from bson import ObjectId
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
-from datetime import datetime
+from datetime import datetime, timedelta
 
 SECRET_KEY = "your_secret_key"  # Use the same as in Account router
 ALGORITHM = "HS256"
@@ -29,6 +29,39 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
         return {"account_id": account_id, "jabatan": jabatan}
     except Exception:
         raise credentials_exception
+
+def calculate_pertemuan_status(tanggal_awal, current_date=None):
+    """Calculate the status of 16 Pertemuan based on tanggal_awal and current date"""
+    if current_date is None:
+        current_date = datetime.now().date()
+    
+    # Convert tanggal_awal to date if it's datetime
+    if isinstance(tanggal_awal, datetime):
+        start_date = tanggal_awal.date()
+    else:
+        start_date = tanggal_awal
+    
+    pertemuan_list = []
+    
+    for i in range(1, 17):  # Pertemuan 1 to 16
+        # Calculate the date for this pertemuan (weekly intervals)
+        pertemuan_date = start_date + timedelta(weeks=i-1)
+        
+        # Determine status based on current date
+        if pertemuan_date < current_date:
+            status = "Selesai"
+        elif pertemuan_date == current_date:
+            status = "Sedang Berlangsung"
+        else:
+            status = "Belum Dimulai"
+        
+        pertemuan_list.append({
+            "pertemuan": i,
+            "tanggal": pertemuan_date.isoformat(),
+            "status": status
+        })
+    
+    return pertemuan_list
 
 def normalize_doc(doc: dict):
     """Convert ObjectId and datetime to string for JSON serialization"""
@@ -77,6 +110,20 @@ async def get_matkul_by_dosen(current_user: dict = Depends(get_current_user)):
             print(f"[DEBUG] Processing Matkul: {matkul.get('nama_matkul', 'Unknown')}")
             matkul_normalized = normalize_doc(matkul)
             
+            # Calculate Pertemuan status
+            if "tanggal_awal" in matkul_normalized:
+                try:
+                    # Parse tanggal_awal if it's a string
+                    tanggal_awal = matkul.get("tanggal_awal")
+                    if isinstance(tanggal_awal, str):
+                        tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+                    
+                    matkul_normalized["pertemuan_list"] = calculate_pertemuan_status(tanggal_awal)
+                    print(f"[DEBUG] Added {len(matkul_normalized['pertemuan_list'])} pertemuan for {matkul_normalized.get('nama_matkul')}")
+                except Exception as e:
+                    print(f"[DEBUG] Could not calculate pertemuan status: {e}")
+                    matkul_normalized["pertemuan_list"] = []
+            
             # Get class information if class_id exists
             if "class_id" in matkul_normalized and matkul_normalized["class_id"]:
                 try:
@@ -85,6 +132,8 @@ async def get_matkul_by_dosen(current_user: dict = Depends(get_current_user)):
                     if class_info:
                         matkul_normalized["class_info"] = normalize_doc(class_info)
                         print(f"[DEBUG] Added class_info for {matkul_normalized.get('nama_matkul')}")
+                    else:
+                        print(f"[DEBUG] No class found for class_id: {class_obj_id}")
                 except Exception as e:
                     print(f"[DEBUG] Could not fetch class info: {e}")
                     # If class_id is not a valid ObjectId, skip class lookup
