@@ -13,4 +13,15 @@ Lemme show ya!
 - uvicorn main:app --reload
 - 127.0.0.1:8000/docs (buat buka Swagger, UI nya FastAPI)
 
+# HOW TO RUN THE LAZY WAY
+oh damn those things are wayyyy too many steps, lemme just do this :
+```bash
+./run.bat
+```
+
+wait, i also need to spread my seed too, welp, here it is:
+```bash
+./seeder.bat
+```
+
 # See you on the flipside!
