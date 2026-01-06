@@ -309,6 +309,48 @@ async def debug_matkul_data(current_user: dict = Depends(get_current_user)):
         "message": "Simple debug info"
     }
 
+@router.get("/attendance-distribution", tags=["Matkul"])
+async def get_attendance_distribution(current_user: dict = Depends(get_current_user)):
+    try:
+        account_id = ObjectId(current_user["account_id"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid account ID")
+
+    matkul_cursor = matkul_collection.find({"account_id": account_id})
+    distribution = []
+
+    for matkul in matkul_cursor:
+        matkul_id = matkul.get("_id")
+        nama_matkul = matkul.get("nama_matkul", "Mata Kuliah" )
+        total_enrolled = rps_collection.count_documents({"matkul_id": matkul_id})
+
+        class_filters = build_class_match_filters(matkul.get("class_id"), matkul_id)
+
+        attendance_pipeline = [
+            {"$match": {
+                "$and": [
+                    {"user_id": {"$ne": None}},
+                    {"$or": class_filters}
+                ]
+            }},
+            {"$group": {"_id": "$user_id"}},
+            {"$count": "attendance_count"}
+        ]
+
+        attendance_result = list(attendance_collection.aggregate(attendance_pipeline))
+        attendance_count = attendance_result[0]["attendance_count"] if attendance_result else 0
+        percentage = round((attendance_count / total_enrolled) * 100, 2) if total_enrolled else 0
+
+        distribution.append({
+            "matkul_id": str(matkul_id),
+            "nama_matkul": nama_matkul,
+            "attendance_count": attendance_count,
+            "total_enrolled": total_enrolled,
+            "attendance_percent": percentage,
+        })
+
+    return distribution
+
 @router.get("/{matkul_id}/report-summary", tags=["Matkul"])
 async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends(get_current_user)):
     try:
