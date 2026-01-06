@@ -376,17 +376,27 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
     effective_sessions = max(scheduled_sessions, max_attended_sessions, 1)
 
     enrolled_docs = list(rps_collection.find({"matkul_id": matkul_obj_id}))
-    user_lookup_ids = []
+    enrolled_user_map = {}
 
     for doc in enrolled_docs:
         normalized = normalize_object_id(doc.get("user_id"))
         if normalized:
-            user_lookup_ids.append(normalized)
+            enrolled_user_map[str(normalized)] = normalized
+
+    total_enrolled_count = len(enrolled_user_map)
+    user_lookup_ids = list(enrolled_user_map.values())
+
+    for pertemuan in pertemuan_list:
+        pertemuan["total_enrolled"] = total_enrolled_count
 
     for raw_id in attendance_counts.keys():
         normalized = normalize_object_id(raw_id)
-        if normalized and normalized not in user_lookup_ids:
+        if normalized and str(normalized) not in enrolled_user_map:
+            enrolled_user_map[str(normalized)] = normalized
             user_lookup_ids.append(normalized)
+
+    if total_enrolled_count == 0:
+        total_enrolled_count = len(enrolled_user_map)
 
     user_name_map = {}
     if user_lookup_ids:
@@ -426,22 +436,73 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
             "total_sessions": effective_sessions,
         })
 
+    session_pipeline = [
+        {"$match": {
+            "$and": [
+                {"user_id": {"$ne": None}},
+                match_conditions
+            ]
+        }},
+        {"$addFields": {"timestamp_date": {"$toDate": "$timestamp"}}},
+        {"$match": {"timestamp_date": {"$ne": None}}},
+        {"$project": {
+            "user_id": 1,
+            "timestamp_date": 1,
+            "session_key": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp_date"}}
+        }},
+        {"$match": {"session_key": {"$ne": None}}},
+        {"$group": {
+            "_id": {"session_key": "$session_key", "user_id": "$user_id"},
+            "first_timestamp": {"$min": "$timestamp_date"}
+        }},
+        {"$group": {
+            "_id": "$_id.session_key",
+            "first_timestamp": {"$min": "$first_timestamp"},
+            "attendees": {"$addToSet": "$_id.user_id"}
+        }},
+        {"$sort": {"first_timestamp": 1}}
+    ]
+
+    session_results = list(attendance_collection.aggregate(session_pipeline))
+
     trend_data = []
     history_data = []
+    history_capacity_base = total_enrolled_count if total_enrolled_count > 0 else len(attendance_counts)
 
-    for pertemuan in pertemuan_list:
-        total_enrolled = pertemuan.get("total_enrolled", 0) or 0
-        present_count = pertemuan.get("present_count", 0) or 0
-        percent = round((present_count / total_enrolled) * 100, 2) if total_enrolled else 0
-        trend_data.append({
-            "month": f"Mg {pertemuan.get('pertemuan')}",
-            "attendance": percent
-        })
-        history_data.append({
-            "pertemuan": f"Pertemuan {pertemuan.get('pertemuan')}",
-            "tanggal": pertemuan.get("tanggal"),
-            "kehadiran": f"{present_count}/{total_enrolled}"
-        })
+    if session_results:
+        for idx, session in enumerate(session_results, start=1):
+            session_timestamp = session.get("first_timestamp")
+            session_date_iso = session_timestamp.isoformat() if isinstance(session_timestamp, datetime) else session.get("_id")
+            attendee_ids = [str(uid) for uid in session.get("attendees", []) if uid is not None]
+            present_count = len(attendee_ids)
+            capacity = history_capacity_base if history_capacity_base > 0 else max(present_count, 1)
+            percent = round((present_count / capacity) * 100, 2) if capacity else 0
+            trend_data.append({
+                "month": f"Mg {idx}",
+                "attendance": percent
+            })
+            history_data.append({
+                "pertemuan": f"Pertemuan {idx}",
+                "tanggal": session_date_iso,
+                "kehadiran": f"{present_count}/{capacity}",
+                "attendees": [user_name_map.get(att_id, "Mahasiswa") for att_id in attendee_ids]
+            })
+    else:
+        for pertemuan in pertemuan_list:
+            total_enrolled = pertemuan.get("total_enrolled", 0) or history_capacity_base
+            present_count = pertemuan.get("present_count", 0) or 0
+            capacity = total_enrolled if total_enrolled else max(present_count, 1)
+            percent = round((present_count / capacity) * 100, 2) if capacity else 0
+            trend_data.append({
+                "month": f"Mg {pertemuan.get('pertemuan')}",
+                "attendance": percent
+            })
+            history_data.append({
+                "pertemuan": f"Pertemuan {pertemuan.get('pertemuan')}",
+                "tanggal": pertemuan.get("tanggal"),
+                "kehadiran": f"{present_count}/{capacity}",
+                "attendees": []
+            })
 
     distribution_template = [
         {"range": "<50%", "students": 0},
