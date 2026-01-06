@@ -347,7 +347,20 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
                 match_conditions
             ]
         }},
-        {"$group": {"_id": "$user_id", "attended_sessions": {"$sum": 1}}}
+        {"$addFields": {
+            "timestamp_date": {"$toDate": "$timestamp"}
+        }},
+        {"$match": {"timestamp_date": {"$ne": None}}},
+        {"$addFields": {
+            "session_key": {
+                "$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp_date"}
+            }
+        }},
+        {"$match": {"session_key": {"$ne": None}}},
+        {"$group": {
+            "_id": {"user_id": "$user_id", "session_key": "$session_key"}
+        }},
+        {"$group": {"_id": "$_id.user_id", "attended_sessions": {"$sum": 1}}}
     ]
 
     attendance_results = list(attendance_collection.aggregate(attendance_pipeline))
@@ -358,8 +371,9 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
         attendance_counts[str(record["_id"])] = record.get("attended_sessions", 0)
 
     completed_sessions = [p for p in pertemuan_list if p.get("status") != "Belum Dimulai"]
-    total_sessions = len(completed_sessions) if completed_sessions else len(pertemuan_list)
-    effective_sessions = total_sessions if total_sessions > 0 else 1
+    scheduled_sessions = len(completed_sessions) if completed_sessions else len(pertemuan_list)
+    max_attended_sessions = max(attendance_counts.values(), default=0)
+    effective_sessions = max(scheduled_sessions, max_attended_sessions, 1)
 
     enrolled_docs = list(rps_collection.find({"matkul_id": matkul_obj_id}))
     user_lookup_ids = []
@@ -387,6 +401,8 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
     for doc in enrolled_docs:
         normalized = normalize_object_id(doc.get("user_id"))
         user_id_str = str(normalized) if normalized else str(doc.get("user_id"))
+        if not user_id_str or user_id_str in seen_ids:
+            continue
         seen_ids.add(user_id_str)
         attended = attendance_counts.get(user_id_str, 0)
         percent = round((attended / effective_sessions) * 100) if effective_sessions else 0
@@ -395,7 +411,7 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
             "name": user_name_map.get(user_id_str, "Mahasiswa"),
             "attendance_percent": percent,
             "attended_sessions": attended,
-            "total_sessions": total_sessions,
+            "total_sessions": effective_sessions,
         })
 
     for uid_str, attended in attendance_counts.items():
@@ -407,7 +423,7 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
             "name": user_name_map.get(uid_str, "Mahasiswa"),
             "attendance_percent": percent,
             "attended_sessions": attended,
-            "total_sessions": total_sessions,
+            "total_sessions": effective_sessions,
         })
 
     trend_data = []
