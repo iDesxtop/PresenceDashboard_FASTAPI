@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from starlette.responses import JSONResponse
 from typing import List
-from config.configrations import matkul_collection, class_collection
+from config.configrations import matkul_collection, class_collection, db
 from bson import ObjectId
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
@@ -12,6 +12,10 @@ ALGORITHM = "HS256"
 
 router = APIRouter()
 bearer_scheme = HTTPBearer()
+
+# Get additional collections
+rps_collection = db["RPS"]
+attendance_collection = db["Attendance"]
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)):
     token = credentials.credentials
@@ -29,6 +33,108 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
         return {"account_id": account_id, "jabatan": jabatan}
     except Exception:
         raise credentials_exception
+
+def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, current_date=None):
+    """Calculate the status of 16 Pertemuan with attendance data using the same logic as Attendance API"""
+    if current_date is None:
+        current_date = datetime.now().date()
+    
+    # Convert tanggal_awal to date if it's datetime
+    if isinstance(tanggal_awal, datetime):
+        start_date = tanggal_awal.date()
+    else:
+        start_date = tanggal_awal
+    
+    # Get total enrolled students for this Matkul
+    try:
+        matkul_obj_id = ObjectId(matkul_id)
+        total_enrolled = rps_collection.count_documents({"matkul_id": matkul_obj_id})
+    except Exception:
+        total_enrolled = 0
+    
+    # Get the Matkul to find class_id and schedule info
+    try:
+        matkul = matkul_collection.find_one({"_id": matkul_obj_id})
+        class_id = matkul.get("class_id") if matkul else None
+        jam_awal = matkul.get("jam_awal") if matkul else None
+        jam_akhir = matkul.get("jam_akhir") if matkul else None
+    except Exception:
+        class_id = None
+        jam_awal = None
+        jam_akhir = None
+    
+    pertemuan_list = []
+    
+    for i in range(1, 17):  # Pertemuan 1 to 16
+        # Calculate the date for this pertemuan (weekly intervals)
+        pertemuan_date = start_date + timedelta(weeks=i-1)
+        
+        # Determine status based on current date
+        if pertemuan_date < current_date:
+            status = "Selesai"
+        elif pertemuan_date == current_date:
+            status = "Sedang Berlangsung"
+        else:
+            status = "Belum Dimulai"
+        
+        # Get attendance count using the same logic as the working Attendance API
+        attendance_count = 0
+        if class_id and jam_awal and jam_akhir and (status == "Selesai" or status == "Sedang Berlangsung"):
+            try:
+                # Use the same datetime parsing logic as the working API
+                meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
+                start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
+                end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+                
+                # Use the same aggregation pipeline as the working API
+                pipeline = [
+                    {"$addFields": {
+                        "timestamp_date": {"$toDate": "$timestamp"}
+                    }},
+                    {"$match": {
+                        "timestamp_date": {"$gte": start_time, "$lte": end_time},
+                        "$or": [
+                            {"class_id": str(class_id)},
+                            {"class_id": class_id}
+                        ]
+                    }},
+                    {"$lookup": {
+                        "from": "Users",
+                        "localField": "user_id",
+                        "foreignField": "_id",
+                        "as": "student_info"
+                    }},
+                    {"$project": {
+                        "timestamp": 1,
+                        "full_name": {
+                            "$cond": [
+                                {"$gt": [{"$size": "$student_info"}, 0]},
+                                {"$arrayElemAt": ["$student_info.name", 0]},
+                                "Unknown"
+                            ]
+                        }
+                    }}
+                ]
+                
+                results = list(attendance_collection.aggregate(pipeline))
+                attendance_count = len(results)
+                
+                print(f"[DEBUG] Pertemuan {i} ({meeting_date_str}): Found {attendance_count} attendance records")
+                
+            except Exception as e:
+                print(f"[DEBUG] Error calculating attendance for Pertemuan {i}: {e}")
+                attendance_count = 0
+        
+        pertemuan_list.append({
+            "pertemuan": i,
+            "tanggal": pertemuan_date.isoformat(),
+            "status": status,
+            "present_count": attendance_count,
+            "total_enrolled": total_enrolled,
+            "attendance_ratio": f"{attendance_count}/{total_enrolled}" if total_enrolled > 0 else "0/0"
+        })
+    
+    return pertemuan_list
 
 def calculate_pertemuan_status(tanggal_awal, current_date=None):
     """Calculate the status of 16 Pertemuan based on tanggal_awal and current date"""
@@ -110,7 +216,7 @@ async def get_matkul_by_dosen(current_user: dict = Depends(get_current_user)):
             print(f"[DEBUG] Processing Matkul: {matkul.get('nama_matkul', 'Unknown')}")
             matkul_normalized = normalize_doc(matkul)
             
-            # Calculate Pertemuan status
+            # Calculate Pertemuan status with attendance data
             if "tanggal_awal" in matkul_normalized:
                 try:
                     # Parse tanggal_awal if it's a string
@@ -118,10 +224,14 @@ async def get_matkul_by_dosen(current_user: dict = Depends(get_current_user)):
                     if isinstance(tanggal_awal, str):
                         tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
                     
-                    matkul_normalized["pertemuan_list"] = calculate_pertemuan_status(tanggal_awal)
-                    print(f"[DEBUG] Added {len(matkul_normalized['pertemuan_list'])} pertemuan for {matkul_normalized.get('nama_matkul')}")
+                    matkul_normalized["pertemuan_list"] = calculate_pertemuan_with_attendance(
+                        tanggal_awal, 
+                        matkul["_id"],
+                        matkul.get("nama_matkul", "")
+                    )
+                    print(f"[DEBUG] Added {len(matkul_normalized['pertemuan_list'])} pertemuan with attendance for {matkul_normalized.get('nama_matkul')}")
                 except Exception as e:
-                    print(f"[DEBUG] Could not calculate pertemuan status: {e}")
+                    print(f"[DEBUG] Could not calculate pertemuan status with attendance: {e}")
                     matkul_normalized["pertemuan_list"] = []
             
             # Get class information if class_id exists

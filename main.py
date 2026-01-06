@@ -7,6 +7,7 @@ from routes.FaceOperation import router as face_router
 from routes.Account import router as account_router
 from routes.Class import router as class_router
 from routes.Matkul import router as matkul_router
+from routes.RPS import router as rps_router
 from config.configrations import db
 
 app = FastAPI()
@@ -30,6 +31,7 @@ app.include_router(face_router, tags=["FaceOperation"])
 app.include_router(account_router, prefix="/account", tags=["Account"])
 app.include_router(class_router, prefix="/class", tags=["Class"])
 app.include_router(matkul_router, prefix="/matkul", tags=["Matkul"])
+app.include_router(rps_router, prefix="/rps", tags=["RPS"])
 
 @app.get("/")
 async def read_root():
