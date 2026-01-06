@@ -469,6 +469,140 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
         "default_student_id": students_summary[0]["user_id"] if students_summary else None,
     }
 
+@router.get("/{matkul_id}/pertemuan/{pertemuan_ke}", tags=["Matkul"])
+async def get_pertemuan_detail(
+    matkul_id: str,
+    pertemuan_ke: int,
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        matkul_obj_id = ObjectId(matkul_id)
+        account_id = ObjectId(current_user["account_id"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ObjectId")
+
+    matkul = matkul_collection.find_one({"_id": matkul_obj_id, "account_id": account_id})
+    if not matkul:
+        raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
+
+    tanggal_awal = matkul.get("tanggal_awal")
+    if not tanggal_awal:
+        raise HTTPException(status_code=400, detail="Matkul is missing tanggal_awal")
+    
+    if isinstance(tanggal_awal, str):
+        try:
+            tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid tanggal_awal format")
+
+    if isinstance(tanggal_awal, datetime):
+        start_date = tanggal_awal.date()
+    else:
+        start_date = tanggal_awal
+
+    jam_awal = matkul.get("jam_awal")
+    jam_akhir = matkul.get("jam_akhir")
+    class_id = matkul.get("class_id")
+
+    # Calculate meeting date
+    pertemuan_date = start_date + timedelta(weeks=pertemuan_ke - 1)
+    meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
+
+    # Determine status
+    current_date_obj = datetime.now().date()
+    if pertemuan_date < current_date_obj:
+        status = "Selesai"
+    elif pertemuan_date == current_date_obj:
+        status = "Sedang Berlangsung"
+    else:
+        status = "Belum Dimulai"
+
+    # Get Enrolled Students
+    enrolled_docs = list(rps_collection.find({"matkul_id": matkul_obj_id}))
+    
+    unique_user_ids = {}
+    for doc in enrolled_docs:
+        uid = normalize_object_id(doc.get("user_id"))
+        if uid:
+            unique_user_ids[str(uid)] = uid
+            
+    user_ids = list(unique_user_ids.values())
+    
+    # Fetch User Details
+    user_map = {}
+    if user_ids:
+        users = users_collection.find({"_id": {"$in": user_ids}})
+        for u in users:
+            user_map[str(u["_id"])] = {
+                "name": u.get("name", "Unknown"),
+                "nim": u.get("nim", "-") # Assuming 'nim' exists in Users
+            }
+
+    # Get Attendance Records if finished or ongoing
+    attendance_records = {}
+    if class_id and jam_awal and jam_akhir:
+        try:
+            start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
+            end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+            
+            pipeline = [
+                {"$addFields": {
+                    "timestamp_date": {"$toDate": "$timestamp"}
+                }},
+                {"$match": {
+                    "timestamp_date": {"$gte": start_time, "$lte": end_time},
+                    "$or": build_class_match_filters(class_id, matkul_obj_id)
+                }},
+                {"$project": {
+                    "user_id": 1,
+                    "timestamp": 1
+                }}
+            ]
+            
+            attendees = list(attendance_collection.aggregate(pipeline))
+            for a in attendees:
+                uid = str(a.get("user_id"))
+                ts = a.get("timestamp")
+                if isinstance(ts, datetime):
+                    ts = ts.strftime("%H:%M:%S")
+                # Store earliest timestamp if multiple
+                if uid not in attendance_records:
+                    attendance_records[uid] = ts
+                
+        except Exception as e:
+            print(f"Error fetching attendance: {e}")
+
+    # Merge Data
+    student_list = []
+    present_count = 0
+    
+    for uid_obj in user_ids:
+        uid = str(uid_obj)
+        user_info = user_map.get(uid, {"name": "Unknown", "nim": "-"})
+        
+        is_present = uid in attendance_records
+        if is_present:
+            present_count += 1
+            
+        student_list.append({
+            "id": uid,
+            "name": user_info["name"],
+            "nim": user_info["nim"], 
+            "status": "Hadir" if is_present else "Tidak Hadir",
+            "waktu_absen": attendance_records.get(uid, "-")
+        })
+
+    return {
+        "matkul_name": matkul.get("nama_matkul"),
+        "pertemuan": pertemuan_ke,
+        "tanggal": meeting_date_str,
+        "status": status,
+        "total_mahasiswa": len(student_list),
+        "hadir": present_count,
+        "tidak_hadir": len(student_list) - present_count,
+        "students": student_list
+    }
+
 @router.get("/{matkul_id}", tags=["Matkul"])
 async def get_matkul_by_id(matkul_id: str, current_user: dict = Depends(get_current_user)):
     """Get specific Matkul by ID (only if taught by current lecturer)"""
