@@ -7,7 +7,7 @@ db.Matkul.insertMany([
     "hari": "Senin",
     "jam_awal": "07:00",
     "jam_akhir": "09:15", // 07:00 + 135 menit
-    "tanggal_awal": ISODate("2026-01-26T07:00:00Z") // Senin pertama
+    "tanggal_awal": ISODate("2026-01-05T07:00:00Z") // Senin pertama
   },
   {
     "nama_matkul": "Computer Vision",
@@ -17,7 +17,7 @@ db.Matkul.insertMany([
     "hari": "Selasa",
     "jam_awal": "09:30",
     "jam_akhir": "11:45", // 09:30 + 135 menit
-    "tanggal_awal": ISODate("2026-01-27T09:30:00Z") // Selasa pertama
+    "tanggal_awal": ISODate("2026-01-06T09:30:00Z") // Selasa pertama
   },
   {
     "nama_matkul": "Basis Data Non Relasional",
@@ -27,7 +27,7 @@ db.Matkul.insertMany([
     "hari": "Rabu",
     "jam_awal": "13:00",
     "jam_akhir": "15:15", // 13:00 + 135 menit
-    "tanggal_awal": ISODate("2026-01-28T13:00:00Z") // Rabu pertama
+    "tanggal_awal": ISODate("2026-01-07T13:00:00Z") // Rabu pertama
   },
   {
     "nama_matkul": "Statistika",
@@ -37,6 +37,6 @@ db.Matkul.insertMany([
     "hari": "Kamis",
     "jam_awal": "15:30",
     "jam_akhir": "17:45", // 15:30 + 135 menit
-    "tanggal_awal": ISODate("2026-01-29T15:30:00Z") // Kamis pertama
+    "tanggal_awal": ISODate("2026-01-08T15:30:00Z") // Kamis pertama
   }
 ]);
