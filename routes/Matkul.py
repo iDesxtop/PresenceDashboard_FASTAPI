@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from starlette.responses import JSONResponse
 from typing import List
-from config.configrations import matkul_collection, class_collection, db
+from config.configrations import matkul_collection, class_collection, db, users_collection
 from bson import ObjectId
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
@@ -169,6 +169,40 @@ def calculate_pertemuan_status(tanggal_awal, current_date=None):
     
     return pertemuan_list
 
+def normalize_object_id(value):
+    if isinstance(value, ObjectId):
+        return value
+    if isinstance(value, str):
+        try:
+            return ObjectId(value)
+        except Exception:
+            return None
+    return None
+
+def build_class_match_filters(class_id, fallback_id):
+    filters = []
+
+    def add_filter(candidate):
+        if candidate is None:
+            return
+        filters.append({"class_id": candidate})
+        if isinstance(candidate, ObjectId):
+            filters.append({"class_id": str(candidate)})
+        elif isinstance(candidate, str):
+            try:
+                filters.append({"class_id": ObjectId(candidate)})
+            except Exception:
+                pass
+
+    add_filter(class_id)
+    if not filters:
+        add_filter(fallback_id)
+        add_filter(str(fallback_id))
+
+    if not filters:
+        return [{"class_id": fallback_id}]
+    return filters
+
 def normalize_doc(doc: dict):
     """Convert ObjectId and datetime to string for JSON serialization"""
     if not doc:
@@ -273,6 +307,150 @@ async def debug_matkul_data(current_user: dict = Depends(get_current_user)):
         "user_matkul_count": user_matkul_count,
         "total_matkul_count": total_count,
         "message": "Simple debug info"
+    }
+
+@router.get("/{matkul_id}/report-summary", tags=["Matkul"])
+async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        matkul_obj_id = ObjectId(matkul_id)
+        account_id = ObjectId(current_user["account_id"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ObjectId")
+
+    matkul = matkul_collection.find_one({"_id": matkul_obj_id, "account_id": account_id})
+    if not matkul:
+        raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
+
+    tanggal_awal = matkul.get("tanggal_awal")
+    if tanggal_awal is None:
+        raise HTTPException(status_code=400, detail="Matkul is missing tanggal_awal")
+    if isinstance(tanggal_awal, str):
+        try:
+            tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid tanggal_awal format")
+
+    pertemuan_list = calculate_pertemuan_with_attendance(
+        tanggal_awal,
+        matkul["_id"],
+        matkul.get("nama_matkul", "")
+    )
+
+    class_id = matkul.get("class_id")
+    class_filters = build_class_match_filters(class_id, matkul_obj_id)
+
+    match_conditions = {"$or": class_filters}
+    attendance_pipeline = [
+        {"$match": {
+            "$and": [
+                {"user_id": {"$ne": None}},
+                match_conditions
+            ]
+        }},
+        {"$group": {"_id": "$user_id", "attended_sessions": {"$sum": 1}}}
+    ]
+
+    attendance_results = list(attendance_collection.aggregate(attendance_pipeline))
+    attendance_counts = {}
+    for record in attendance_results:
+        if record.get("_id") is None:
+            continue
+        attendance_counts[str(record["_id"])] = record.get("attended_sessions", 0)
+
+    completed_sessions = [p for p in pertemuan_list if p.get("status") != "Belum Dimulai"]
+    total_sessions = len(completed_sessions) if completed_sessions else len(pertemuan_list)
+    effective_sessions = total_sessions if total_sessions > 0 else 1
+
+    enrolled_docs = list(rps_collection.find({"matkul_id": matkul_obj_id}))
+    user_lookup_ids = []
+
+    for doc in enrolled_docs:
+        normalized = normalize_object_id(doc.get("user_id"))
+        if normalized:
+            user_lookup_ids.append(normalized)
+
+    for raw_id in attendance_counts.keys():
+        normalized = normalize_object_id(raw_id)
+        if normalized and normalized not in user_lookup_ids:
+            user_lookup_ids.append(normalized)
+
+    user_name_map = {}
+    if user_lookup_ids:
+        unique_lookup_ids = list({str(_id): _id for _id in user_lookup_ids}.values())
+        user_docs = users_collection.find({"_id": {"$in": unique_lookup_ids}})
+        for user in user_docs:
+            user_name_map[str(user["_id"])] = user.get("name", "Mahasiswa")
+
+    students_summary = []
+    seen_ids = set()
+
+    for doc in enrolled_docs:
+        normalized = normalize_object_id(doc.get("user_id"))
+        user_id_str = str(normalized) if normalized else str(doc.get("user_id"))
+        seen_ids.add(user_id_str)
+        attended = attendance_counts.get(user_id_str, 0)
+        percent = round((attended / effective_sessions) * 100) if effective_sessions else 0
+        students_summary.append({
+            "user_id": user_id_str,
+            "name": user_name_map.get(user_id_str, "Mahasiswa"),
+            "attendance_percent": percent,
+            "attended_sessions": attended,
+            "total_sessions": total_sessions,
+        })
+
+    for uid_str, attended in attendance_counts.items():
+        if uid_str in seen_ids:
+            continue
+        percent = round((attended / effective_sessions) * 100) if effective_sessions else 0
+        students_summary.append({
+            "user_id": uid_str,
+            "name": user_name_map.get(uid_str, "Mahasiswa"),
+            "attendance_percent": percent,
+            "attended_sessions": attended,
+            "total_sessions": total_sessions,
+        })
+
+    trend_data = []
+    history_data = []
+
+    for pertemuan in pertemuan_list:
+        total_enrolled = pertemuan.get("total_enrolled", 0) or 0
+        present_count = pertemuan.get("present_count", 0) or 0
+        percent = round((present_count / total_enrolled) * 100, 2) if total_enrolled else 0
+        trend_data.append({
+            "month": f"Mg {pertemuan.get('pertemuan')}",
+            "attendance": percent
+        })
+        history_data.append({
+            "pertemuan": f"Pertemuan {pertemuan.get('pertemuan')}",
+            "tanggal": pertemuan.get("tanggal"),
+            "kehadiran": f"{present_count}/{total_enrolled}"
+        })
+
+    distribution_template = [
+        {"range": "<50%", "students": 0},
+        {"range": "50-70%", "students": 0},
+        {"range": "70-90%", "students": 0},
+        {"range": ">90%", "students": 0},
+    ]
+
+    for student in students_summary:
+        percent = student.get("attendance_percent", 0)
+        if percent < 50:
+            distribution_template[0]["students"] += 1
+        elif percent < 70:
+            distribution_template[1]["students"] += 1
+        elif percent < 90:
+            distribution_template[2]["students"] += 1
+        else:
+            distribution_template[3]["students"] += 1
+
+    return {
+        "trend": trend_data,
+        "distribution": distribution_template,
+        "students": students_summary,
+        "pertemuan_history": history_data,
+        "default_student_id": students_summary[0]["user_id"] if students_summary else None,
     }
 
 @router.get("/{matkul_id}", tags=["Matkul"])
