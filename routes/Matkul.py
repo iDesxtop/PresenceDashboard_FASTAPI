@@ -596,6 +596,12 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
             "kehadiran": pertemuan.get("attendance_ratio", f"{present_count}/{total_enrolled_value}"),
         })
 
+        status = pertemuan.get("status")
+        is_rescheduled = pertemuan.get("is_rescheduled", False)
+
+        if status == "Belum Dimulai" and not (is_rescheduled):
+            continue
+
         capacity = total_enrolled_value if total_enrolled_value else max(present_count, 1)
         percent = round((present_count / capacity) * 100, 2) if capacity else 0
         trend_data.append({
