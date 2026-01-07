@@ -253,16 +253,19 @@ class FaceRecognitionSystem:
             print("Info: Mencari kecocokan untuk wajah ke-", i+1)
             timer_cari_cocok = time.perf_counter()
             user_id, distance = self.database.find_closest_match(embedding, all_embeddings, threshold)
+            print("Debug: Jarak terdekat untuk wajah ke-", i+1, "adalah:", distance)
             print("WAKTU: Waktu cari kecocokan untuk wajah ke-", i+1, ":", time.perf_counter() - timer_cari_cocok)
             
             timer_handle_match = time.perf_counter()
             if user_id: # jika ditemukan di database users
+                print(f"Info: Wajah ke-{i+1} dikenali sebagai user_id: {user_id} dengan jarak: {distance}")
                 added = self.database.maybe_add_embedding(user_id, embedding, all_embeddings)
                 if added:
                     # Refresh cache karena ada embedding baru
                     self.refresh_embeddings_cache()
                     all_embeddings = self._cached_embeddings
                 # Get bounding box
+                print("Debug: Total bounding boxes:", len(bboxes))
                 bbox = bboxes[i] if i < len(bboxes) else None
                 results.append({
                     "user_id": user_id,
@@ -276,6 +279,7 @@ class FaceRecognitionSystem:
                         "y2": int(bbox[1] + bbox[3]) if bbox is not None else None
                     } if bbox is not None else None
                 })
+                print("Info: Mencatat absensi untuk user_id:", user_id, "class_id:", class_id)
                 self.database.add_user_attendance(user_id, class_id)
             else: # jika tidak ditemukan di database users
                 print("Info: Wajah tidak dikenali!")

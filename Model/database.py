@@ -262,13 +262,17 @@ class FaceDatabase:
         query = {
             "user_id": user_obj_id
         }
+        print(f"[DEBUG] Mencari kehadiran terakhir untuk user {user_id}")
         last_attendance = None
         if attendance_collection is not None:
+            print("[DEBUG] Menggunakan MongoDB untuk kehadiran")
             last_attendance = attendance_collection.find_one(
                 query,
                 sort=[("timestamp", -1)]
             )
+            print(f"[DEBUG] Last attendance dari MongoDB: {last_attendance}")
         else:
+            print("[DEBUG] Menggunakan memory storage untuk kehadiran")
             # Fallback ke memory storage
             filtered = [d for d in self._memory_storage if d.get("user_id") == user_obj_id]
             if filtered:
@@ -276,8 +280,20 @@ class FaceDatabase:
 
         # Cek apakah sudah lewat 45 menit
         if last_attendance:
-            last_time = datetime.fromisoformat(last_attendance["timestamp"]) if isinstance(last_attendance["timestamp"], str) else last_attendance["timestamp"]
+            print(f"[DEBUG] User {user_id} memiliki catatan kehadiran terakhir: {last_attendance}")
             
+            # Parse timestamp dengan handling untuk format Z (UTC)
+            timestamp_str = last_attendance["timestamp"]
+            if isinstance(timestamp_str, str):
+                # Replace "Z" dengan "+00:00" untuk kompatibilitas fromisoformat
+                timestamp_str = timestamp_str.replace("Z", "+00:00")
+                last_time = datetime.fromisoformat(timestamp_str)
+                # Convert ke naive datetime (hilangkan timezone info untuk kompatibilitas)
+                last_time = last_time.replace(tzinfo=None)
+            else:
+                last_time = timestamp_str
+            
+            print(f"[DEBUG] Last attendance time: {last_time}")
             time_diff = (now - last_time).total_seconds() / 60  # dalam menit
             print(f"[DEBUG] User {user_id} last attendance: {last_time}, diff: {time_diff:.1f} menit")
             
