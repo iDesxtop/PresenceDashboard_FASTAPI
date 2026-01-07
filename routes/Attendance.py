@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
 from config.configrations import attendance_collection, users_collection, account_collection, class_collection, matkul_collection
 from models.Account import Account
@@ -93,6 +93,10 @@ async def attendance_report_by_schedule(
     try:
         start_time = datetime.strptime(f"{meeting_date} {waktu_mulai}", "%Y-%m-%d %H:%M")
         end_time = datetime.strptime(f"{meeting_date} {waktu_selesai}", "%Y-%m-%d %H:%M")
+        
+        # Adjustment for WIB to UTC
+        start_time = start_time - timedelta(hours=7)
+        end_time = end_time - timedelta(hours=7)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid date/time: {e}")
     print(f"[DEBUG] BY SCHEDULE: course_name={course_name}, meeting_date={meeting_date}, start_time={start_time}, end_time={end_time}, class_id={class_id}")
@@ -175,6 +179,10 @@ async def attendance_report_by_manual(
     try:
         start_time = datetime.strptime(f"{specific_date} {start_time_str}", "%Y-%m-%d %H:%M")
         end_time = datetime.strptime(f"{specific_date} {end_time_str}", "%Y-%m-%d %H:%M")
+        
+        # Adjustment for WIB to UTC
+        start_time = start_time - timedelta(hours=7)
+        end_time = end_time - timedelta(hours=7)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid date/time: {e}")
     # Validate class_id is a valid ObjectId format and exists in Class collection
