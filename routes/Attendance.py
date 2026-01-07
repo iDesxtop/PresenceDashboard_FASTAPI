@@ -253,3 +253,168 @@ async def attendance_report_by_manual(
         "total_attendance": len(results),
         "attendees": results
     }
+
+# --- Bulk Attendance Update Endpoint ---
+
+class AttendanceUpdateItem(BaseModel):
+    user_id: str
+    present: bool
+    waktu_absen: Optional[str] = None
+
+class UpdateAttendanceRequest(BaseModel):
+    matkul_id: str
+    pertemuan: int
+    attendance: List[AttendanceUpdateItem]
+
+@router.post("/update-bulk")
+async def update_attendance_bulk(
+    request: UpdateAttendanceRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Bulk update attendance records for a specific meeting.
+    - If present=True and record doesn't exist: INSERT new attendance
+    - If present=True and record exists: UPDATE timestamp if changed
+    - If present=False and record exists: DELETE attendance record
+    """
+    from datetime import timedelta
+    
+    try:
+        matkul_obj_id = ObjectId(request.matkul_id)
+        account_id = ObjectId(current_user["id"])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid ObjectId format")
+    
+    # Verify matkul belongs to current user
+    matkul = matkul_collection.find_one({"_id": matkul_obj_id, "account_id": account_id})
+    if not matkul:
+        raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
+    
+    # Get matkul details
+    tanggal_awal = matkul.get("tanggal_awal")
+    jam_awal = matkul.get("jam_awal")
+    class_id = matkul.get("class_id")
+    
+    if not tanggal_awal:
+        raise HTTPException(status_code=400, detail="Matkul is missing tanggal_awal")
+    
+    # Parse tanggal_awal
+    if isinstance(tanggal_awal, str):
+        try:
+            tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid tanggal_awal format")
+    
+    # Calculate meeting date
+    if isinstance(tanggal_awal, datetime):
+        start_date = tanggal_awal.date()
+    else:
+        start_date = tanggal_awal
+    
+    pertemuan_date = start_date + timedelta(weeks=request.pertemuan - 1)
+    meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
+    
+    # Process each student's attendance
+    inserted_count = 0
+    updated_count = 0
+    deleted_count = 0
+    
+    for item in request.attendance:
+        try:
+            user_obj_id = ObjectId(item.user_id)
+        except Exception:
+            continue  # Skip invalid user IDs
+        
+        # Build query to find existing attendance record
+        # Match by user_id and class_id, with timestamp within the meeting date
+        if jam_awal:
+            start_time = datetime.strptime(f"{meeting_date_str} 00:00:00", "%Y-%m-%d %H:%M:%S")
+            end_time = datetime.strptime(f"{meeting_date_str} 23:59:59", "%Y-%m-%d %H:%M:%S")
+        else:
+            start_time = datetime.strptime(f"{meeting_date_str} 00:00:00", "%Y-%m-%d %H:%M:%S")
+            end_time = datetime.strptime(f"{meeting_date_str} 23:59:59", "%Y-%m-%d %H:%M:%S")
+        
+        # Build class ID matching conditions
+        class_match = []
+        if class_id:
+            class_match.append({"class_id": class_id})
+            class_match.append({"class_id": str(class_id)})
+            if isinstance(class_id, str):
+                try:
+                    class_match.append({"class_id": ObjectId(class_id)})
+                except:
+                    pass
+        
+        # Find existing attendance records for this user and class
+        # Use simple find instead of aggregation to avoid $toDate errors on corrupted data
+        find_query = {
+            "user_id": user_obj_id,
+        }
+        if class_match:
+            find_query["$or"] = class_match
+        
+        existing_records = list(attendance_collection.find(find_query))
+        
+        # Filter by date in Python (safer than MongoDB $toDate on potentially corrupt data)
+        existing = None
+        for record in existing_records:
+            ts = record.get("timestamp", "")
+            if isinstance(ts, str) and meeting_date_str in ts:
+                existing = record
+                break
+            elif isinstance(ts, datetime):
+                if ts.date() == pertemuan_date:
+                    existing = record
+                    break
+        
+        if item.present:
+            # Handle waktu_absen - could be full ISO timestamp or just time
+            if item.waktu_absen:
+                waktu = item.waktu_absen.strip()
+                # Check if it's already a full ISO timestamp (contains 'T' and looks like a date)
+                if 'T' in waktu and len(waktu) > 10:
+                    # Already a full timestamp, use it directly
+                    # Remove trailing 'Z' if present and add it back consistently
+                    timestamp_iso = waktu.rstrip('Z') + 'Z' if waktu.endswith('Z') else waktu
+                    # Validate it's a proper timestamp
+                    try:
+                        datetime.fromisoformat(waktu.replace('Z', '+00:00'))
+                        timestamp_iso = waktu
+                    except:
+                        # If invalid, construct from meeting date
+                        timestamp_iso = f"{meeting_date_str}T{jam_awal}:00Z" if jam_awal else f"{meeting_date_str}T08:00:00Z"
+                else:
+                    # Just time component (HH:MM:SS or HH:MM), combine with meeting date
+                    timestamp_iso = f"{meeting_date_str}T{waktu}Z"
+            else:
+                # Default to start of class time
+                timestamp_iso = f"{meeting_date_str}T{jam_awal}:00Z" if jam_awal else f"{meeting_date_str}T08:00:00Z"
+            
+            if existing:
+                # Update existing record
+                attendance_collection.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {"timestamp": timestamp_iso}}
+                )
+                updated_count += 1
+            else:
+                # Insert new record
+                new_record = {
+                    "user_id": user_obj_id,
+                    "class_id": class_id if class_id else matkul_obj_id,
+                    "timestamp": timestamp_iso
+                }
+                attendance_collection.insert_one(new_record)
+                inserted_count += 1
+        else:
+            # Delete record if exists
+            if existing:
+                attendance_collection.delete_one({"_id": existing["_id"]})
+                deleted_count += 1
+    
+    return {
+        "message": "Attendance updated successfully",
+        "inserted": inserted_count,
+        "updated": updated_count,
+        "deleted": deleted_count
+    }

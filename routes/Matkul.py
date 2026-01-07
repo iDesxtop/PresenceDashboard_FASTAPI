@@ -722,8 +722,9 @@ async def get_pertemuan_detail(
             for a in attendees:
                 uid = str(a.get("user_id"))
                 ts = a.get("timestamp")
+                # Return full ISO timestamp string instead of just time
                 if isinstance(ts, datetime):
-                    ts = ts.strftime("%H:%M:%S")
+                    ts = ts.isoformat()
                 # Store earliest timestamp if multiple
                 if uid not in attendance_records:
                     attendance_records[uid] = ts
