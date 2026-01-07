@@ -788,6 +788,11 @@ async def get_pertemuan_detail(
             start_time = datetime.strptime(f"{meeting_date_str} {jam_awal_curr}", "%Y-%m-%d %H:%M")
             end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir_curr}", "%Y-%m-%d %H:%M")
             
+            # Adjustment for WIB to UTC (Assuming class times are WIB)
+            # This ensures we match the UTC timestamps stored in DB
+            start_time = start_time - timedelta(hours=7)
+            end_time = end_time - timedelta(hours=7)
+            
             pipeline = [
                 {"$addFields": {
                     "timestamp_date": {"$toDate": "$timestamp"}
@@ -1047,6 +1052,11 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
 
             start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
             end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+            
+            # Adjustment for WIB to UTC (Assuming class times are WIB)
+            # This ensures we delete/overwrite the correct UTC records
+            start_time = start_time - timedelta(hours=7)
+            end_time = end_time - timedelta(hours=7)
             
             # 1. DELETE EXISTING RECORDS FOR THIS USER IN THIS SESSION
             # This fixes "cant edit timestamp" for regular classes.
