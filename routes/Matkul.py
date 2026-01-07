@@ -333,35 +333,74 @@ async def get_attendance_distribution(current_user: dict = Depends(get_current_u
 
         class_filters = build_class_match_filters(matkul.get("class_id"), matkul_id)
 
-        attendance_pipeline = [
+        session_pipeline = [
             {"$match": {
                 "$and": [
                     {"user_id": {"$ne": None}},
                     {"$or": class_filters}
                 ]
             }},
-            {"$group": {"_id": "$user_id"}},
-            {"$count": "attendance_count"}
+            {"$addFields": {"timestamp_date": {"$toDate": "$timestamp"}}},
+            {"$match": {"timestamp_date": {"$ne": None}}},
+            {"$project": {
+                "user_id": 1,
+                "timestamp_date": 1,
+                "session_key": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp_date"}}
+            }},
+            {"$match": {"session_key": {"$ne": None}}},
+            {"$group": {
+                "_id": {"session_key": "$session_key", "user_id": "$user_id"},
+                "first_timestamp": {"$min": "$timestamp_date"}
+            }},
+            {"$group": {
+                "_id": "$_id.session_key",
+                "first_timestamp": {"$min": "$first_timestamp"},
+                "attendees": {"$addToSet": "$_id.user_id"}
+            }},
+            {"$sort": {"first_timestamp": 1}}
         ]
 
-        attendance_result = list(attendance_collection.aggregate(attendance_pipeline))
-        attendance_count = attendance_result[0]["attendance_count"] if attendance_result else 0
+        session_results = list(attendance_collection.aggregate(session_pipeline))
+        session_count = len(session_results)
+        total_attendance = 0
+        unique_attendees = set()
+        for session in session_results:
+            attendees = [str(uid) for uid in session.get("attendees", []) if uid is not None]
+            total_attendance += len(attendees)
+            unique_attendees.update(attendees)
 
-        if total_enrolled == 0 and attendance_count > 0:
-            total_enrolled = attendance_count
+        max_capacity = session_count * total_enrolled if session_count and total_enrolled else 0
 
-        percentage = round((attendance_count / total_enrolled) * 100, 2) if total_enrolled else 0
+        if total_enrolled == 0 and unique_attendees:
+            total_enrolled = len(unique_attendees)
+            max_capacity = session_count * total_enrolled if session_count else total_attendance
+
+        if max_capacity == 0 and total_attendance > 0:
+            max_capacity = total_attendance
+
+        percentage = round((total_attendance / max_capacity) * 100, 2) if max_capacity else 0
 
         stats_payload = {
             "matkul_id": str(matkul_id),
             "nama_matkul": nama_matkul,
-            "attendance_count": attendance_count,
+            "attendance_count": total_attendance,
             "total_enrolled": total_enrolled,
             "attendance_percent": percentage,
+            "session_count": session_count,
+            "max_capacity": max_capacity,
         }
 
         existing = class_stats.get(class_key)
-        if (not existing) or (stats_payload["total_enrolled"] > existing["total_enrolled"]):
+        chosen = False
+        if not existing:
+            chosen = True
+        else:
+            if stats_payload.get("max_capacity", 0) > existing.get("max_capacity", 0):
+                chosen = True
+            elif stats_payload.get("total_enrolled", 0) > existing.get("total_enrolled", 0):
+                chosen = True
+
+        if chosen:
             class_stats[class_key] = stats_payload
 
     distribution = list(class_stats.values())
