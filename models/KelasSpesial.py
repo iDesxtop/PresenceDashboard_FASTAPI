@@ -37,3 +37,9 @@ class RescheduleRequest(BaseModel):
     jam_selesai_baru: str # HH:MM
     class_id: Optional[str] = None
     is_online: bool = False
+
+class ManualAttendanceRequest(BaseModel):
+    matkul_id: str
+    pertemuan: int
+    student_id: str # User/Account ID (the student)
+    status: bool # True = Hadir, False = Tidak Hadir

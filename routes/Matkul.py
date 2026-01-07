@@ -1,12 +1,12 @@
 from fastapi import APIRouter, HTTPException, Depends
 from starlette.responses import JSONResponse
 from typing import List
-from config.configrations import matkul_collection, class_collection, db, users_collection, kelas_spesial_collection
-from models.KelasSpesial import RescheduleRequest, KelasSpesialModel
+from config.configrations import matkul_collection, class_collection, db, users_collection, kelas_spesial_collection, attendance_spesial_collection
+from models.KelasSpesial import RescheduleRequest, KelasSpesialModel, ManualAttendanceRequest
 from bson import ObjectId
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 SECRET_KEY = "your_secret_key"  # Use the same as in Account router
 ALGORITHM = "HS256"
@@ -105,9 +105,20 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
         else:
             status = "Belum Dimulai"
         
-        # Get attendance count using the same logic as the working Attendance API
+        # Get attendance count
         attendance_count = 0
-        if jam_awal_curr and jam_akhir_curr and (status == "Selesai" or status == "Sedang Berlangsung"):
+        if override_data:
+            # Rescheduled class: Use Manual Attendance logic
+            # Count how many students are present (record exists in Attendance_Spesial)
+            try:
+                attendance_count = attendance_spesial_collection.count_documents({
+                    "spesial_id": override_data["_id"]
+                })
+            except Exception as e:
+                print(f"[DEBUG] Error counting manual attendance: {e}")
+                attendance_count = 0
+        elif jam_awal_curr and jam_akhir_curr and (status == "Selesai" or status == "Sedang Berlangsung"):
+            # Original class: Use Automatic Camera Attendance
             try:
                 # Use the same datetime parsing logic as the working API
                 meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
@@ -714,10 +725,42 @@ async def get_pertemuan_detail(
                 "nim": u.get("nim", "-") # Assuming 'nim' exists in Users
             }
 
-    # Get Attendance Records if finished or ongoing
-    attendance_records = {}
-    # Use current params (handling rescheduled times/classes)
-    if jam_awal_curr and jam_akhir_curr:
+    # Get Attendance Records
+    attendance_records = {} # Format: {user_id: timestamp_str}
+    
+    if override_data:
+        # ---------------------------------------------------------
+        # Rescheduled Class -> Read from Attendance_Spesial (Manual)
+        # Using spesial_id from Kelas_Spesial
+        # ---------------------------------------------------------
+        try:
+            manual_records = list(attendance_spesial_collection.find({
+                "spesial_id": override_data["_id"]
+            }))
+            
+            for record in manual_records:
+                # user_id stored in Attendance_Spesial is ObjectId? Let's check how it's saved.
+                # In /attendance-manual, we do `student_obj_id = ObjectId(payload.student_id)`
+                # Then save "user_id": student_obj_id
+                # So we must convert ObjectId to string here
+                uid = str(record.get("user_id"))
+                ts = record.get("timestamp")
+                if isinstance(ts, datetime):
+                    ts = ts.isoformat()
+                else:
+                    ts = "-" # Manual record might not have timestamp if not set
+                attendance_records[uid] = ts
+        except Exception as e:
+            print(f"Error fetching manual attendance: {e}")
+
+    # Use current params (handling rescheduled times/classes for Automatic Check)
+    # Only if NOT rescheduled (original flow) or if we want hybrid? 
+    # Requirement: "only for the userflow of dosen changing schedules... CRUD attendance with camera... should be preserved"
+    # implies mutually exclusive flows based on whether schedule changed.
+    elif jam_awal_curr and jam_akhir_curr:
+        # ---------------------------------------------------------
+        # Standard Class -> Read from Attendance (Automatic/Camera)
+        # ---------------------------------------------------------
         try:
             start_time = datetime.strptime(f"{meeting_date_str} {jam_awal_curr}", "%Y-%m-%d %H:%M")
             end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir_curr}", "%Y-%m-%d %H:%M")
@@ -852,7 +895,8 @@ async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depe
         try:
              # Construct full datetime for 'tanggal_kelas' using date + start time
              dt_str = f"{payload.tanggal_baru}T{payload.jam_mulai_baru}:00"
-             tanggal_kelas = datetime.fromisoformat(dt_str)
+             # Ensure UTC 
+             tanggal_kelas = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid date/time format: {e}")
 
@@ -877,4 +921,66 @@ async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depe
         
     except Exception as e:
         print(f"Error rescheduling: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/attendance-manual", tags=["Matkul"])
+async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Manually update attendance for a scheduled/rescheduled class.
+    Only allows changes if the class is rescheduled (exists in Kelas_Spesial).
+    """
+    try:
+        matkul_obj_id = ObjectId(payload.matkul_id)
+        student_obj_id = ObjectId(payload.student_id)
+        account_id = ObjectId(current_user["account_id"])
+
+        # 1. Verify Matkul ownership
+        matkul = matkul_collection.find_one({
+            "_id": matkul_obj_id,
+            "account_id": account_id
+        })
+        if not matkul:
+            raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
+        
+        # 2. Verify Reschedule Entry Exists (Requirement: "only for the userflow of dosen changing schedules")
+        # If no reschedule entry, manual attendance is technically disabled by this rule?
+        # User said: "dosen are expected to input ... only for the userflow of dosen changing schedules"
+        # So we check if override exists.
+        override_data = kelas_spesial_collection.find_one({
+            "matkul_id": matkul_obj_id,
+            "pertemuan": payload.pertemuan
+        })
+        
+        if not override_data:
+            raise HTTPException(status_code=400, detail="Manual attendance is only allowed for rescheduled classes.")
+
+        # 3. Create or Remove Attendance Record
+        # Using spesial_id from the override document
+        filter_query = {
+            "spesial_id": override_data["_id"],
+            "user_id": student_obj_id
+        }
+        
+        if payload.status:
+            # Add (Upsert)
+            update_doc = {
+                "spesial_id": override_data["_id"],
+                "user_id": student_obj_id,
+                "timestamp": datetime.now(timezone.utc)
+            }
+            # We can just use update_one with upsert to keep it simple, 
+            # or finding one then inserting. Update upsert is safer.
+            attendance_spesial_collection.update_one(
+                filter_query,
+                {"$set": update_doc},
+                upsert=True
+            )
+        else:
+            # Remove (Delete)
+            attendance_spesial_collection.delete_one(filter_query)
+        
+        return {"status": "success", "message": "Attendance updated"}
+
+    except Exception as e:
+        print(f"Error manual attendance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
