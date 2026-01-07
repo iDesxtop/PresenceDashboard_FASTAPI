@@ -1005,85 +1005,19 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
             
             if payload.status:
                 # Add (Upsert)
-                # Store timestamp as datetime to match previous logic and schema
-                # But user requests "ISODate ending in Z" - so we need to ensure Mongo stores it as Date
-                # or String with Z. 
-                # Seeder used ISODate(...) which is Date object.
-                # However, previous request: "USE THE ONE WHERE IT ENDS WITH Z...".
-                # If we store as datetime object in PyMongo, it becomes ISODate in Mongo. 
-                # If we store as String, it becomes String.
-                # The user's example: `tanggal_kelas: "2025-04-23T08:00:00.000Z"` (String) vs `2026-01-09...` (Date).
-                # Wait, "USE THE ONE WHERE IT ENDS WITH Z since the seeders are also using it NOT THE ONE ENDING WITH THE +00:00"
-                # This implies STRICT STRING formatted as ISO with Z suffix.
-                # Python `datetime.isoformat()` produces `+00:00` for UTC.
-                # So we must format it manually or replace using `replace('+00:00', 'Z')`.
-                
-                attendance_ts_str = attendance_ts.isoformat().replace("+00:00", "Z")
-                if not attendance_ts_str.endswith("Z"):
-                     attendance_ts_str += "Z" # Fallback if offset was missing/different? No, keeping it simple.
-
-                # THE USER WANTS STRINGS? 
-                # "tanggal_kelas" example was a String.
-                # "waktu_absen" in table is String.
-                # Let's try storing strict string.
+                # Store timestamp as ISO String with Z (Requested Unified Format)
+                # Previous implementation used datetime object which becomes ISODate in Mongo.
+                # User specifically requested "USE THE ONE WHERE IT ENDS WITH Z".
+                ts_iso = attendance_ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 
                 update_doc = {
                     "spesial_id": override_data["_id"],
                     "user_id": student_obj_id,
-                    "timestamp": datetime.fromisoformat(attendance_ts_str.replace('Z', '+00:00')) # Store as Date object per Mongo conventions usually, but user is adamant about specific string format comparison?
-                    # "ISODate" in Mongo Shell output means it's a DATE type.
-                    # "2025-..." string means it's a STRING type.
-                    # The seeder usually uses ISODate, which corresponds to Python datetime.
-                    # The user showed `tanggal_kelas: "2025...Z"` (quoted) vs `tanggal_kelas: 2026...` (unquoted).
-                    # Quoted = String. Unquoted = ISODate/Date.
-                    # User: "USE THE ONE WHERE IT ENDS WITH Z". This usually implies the String representation.
-                    # BUT "since the seeders are also using it" suggests we should match seeder type.
-                    # If seeder uses `ISODate("...")`, that is a Date object.
-                    # If seeder uses `"2025-..."`, that is a String.
-                    # Let's look at `Benih/Attendance_Spesial.js` if possible.
-                    # I will assume User wants ISODate (Date Object) based on "ISODate" keyword mentioned earlier, 
-                    # status quo "ISODate(...)" is standard. 
-                    # BUT the Z vs +00:00 output is a string representation usage issue.
-                    # Wait, `tanggal_kelas` in json response had `+00:00`. User wants `Z`.
-                    # This is purely serialization issue in FastAPI response? 
-                    # OR is it storage?
-                    # "rescheduling userflow timestamp is also unified by using the one that ends in Z"
-                    # I will ensure serialization sends Z.
-                    # And storage uses Date object (datetime in python).
-                    # Wait, if I cannot edit timestamp for users already attended...
-                    # That's the real issue.
-                    # The logic below `attendance_spesial_collection.update_one` supports upsert.
-                    # This implies it SHOULD update. 
-                    
-                    # Problem: Maybe `attendance_ts` is not changing because `payload.timestamp` logic?
-                    # If I send new time, it should update.
+                    "timestamp": ts_iso # String formatted as ISO with Z
                 }
-                
-                # RE-READING: "i cant edit timestamp for users that are already attended"
-                # Maybe because the frontend sends `status: true` and backend just `update_one`...
-                # If I change time, `payload.timestamp` changes. `attendance_ts` changes.
-                # `update_doc` has new timestamp.
-                # `update_one` with `$set` SHOULD update it.
-                # Why wouldn't it? 
-                # Maybe `payload.status` is checked, but what about the condition?
-                # Ah, `filter_query` is `{"spesial_id": ..., "user_id": ...}`.
-                # This finds the doc.
-                # `$set` updates `timestamp`.
-                # This looks correct for Attendance_Spesial.
-                
-                # What about Regular?
-                # I implemented INSERT.
-                # If I Insert, I have duplicates.
-                # Aggregation might pick the OLD one.
-                # So I MUST delete old ones for Regular class.
-                
                 attendance_spesial_collection.update_one(
                     filter_query,
-                    {"$set": {
-                        "spesial_id": override_data["_id"],
-                        "user_id": student_obj_id,
-                        "timestamp": attendance_ts # Python datetime -> Mongo ISODate
-                    }},
+                    {"$set": update_doc},
                     upsert=True
                 )
             else:
