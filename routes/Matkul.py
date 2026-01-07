@@ -37,9 +37,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
 
 def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, current_date=None):
     """Calculate the status of 16 Pertemuan with attendance data using the same logic as Attendance API"""
-    now_utc = datetime.now(timezone.utc)
+    # Shift to UTC+7 (WIB) to match "Fake UTC" data
+    now_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+    
     if current_date is None:
-        current_date = now_utc.date()
+        current_date = now_wib.date()
     
     # Convert tanggal_awal to date if it's datetime
     if isinstance(tanggal_awal, datetime):
@@ -101,11 +103,13 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
         # Determine is_rescheduled
         is_rescheduled = True if override_data else False
 
-        # Determine status based on current date
+        meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
+
+        # Determine status based on current date (Using Adjusted WIB Time)
         if pertemuan_date < current_date:
             status = "Selesai"
         elif pertemuan_date == current_date:
-            current_time_str = now_utc.strftime("%H:%M")
+            current_time_str = now_wib.strftime("%H:%M")
             if jam_akhir_curr and current_time_str > jam_akhir_curr:
                 status = "Selesai"
             elif jam_awal_curr and current_time_str < jam_awal_curr:
@@ -121,6 +125,8 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
             # Rescheduled class: Use Manual Attendance logic
             # Count how many students are present (record exists in Attendance_Spesial)
             try:
+                # UNIFIED LOGIC: Just count documents. 
+                # This works regardless of timestamp format (Object vs String) as long as IDs match.
                 attendance_count = attendance_spesial_collection.count_documents({
                     "spesial_id": override_data["_id"]
                 })
@@ -131,7 +137,6 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
             # Original class: Use Automatic Camera Attendance
             try:
                 # Use the same datetime parsing logic as the working API
-                meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
                 start_time = datetime.strptime(f"{meeting_date_str} {jam_awal_curr}", "%Y-%m-%d %H:%M")
                 end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir_curr}", "%Y-%m-%d %H:%M")
                 
@@ -144,28 +149,13 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
                         "timestamp_date": {"$gte": start_time, "$lte": end_time},
                         "$or": build_class_match_filters(class_id_curr, matkul_obj_id)
                     }},
-                    {"$lookup": {
-                        "from": "Users",
-                        "localField": "user_id",
-                        "foreignField": "_id",
-                        "as": "student_info"
-                    }},
-                    {"$project": {
-                        "timestamp": 1,
-                        "full_name": {
-                            "$cond": [
-                                {"$gt": [{"$size": "$student_info"}, 0]},
-                                {"$arrayElemAt": ["$student_info.name", 0]},
-                                "Unknown"
-                            ]
-                        }
+                    {"$group": {
+                        "_id": "$user_id" # Count unique users
                     }}
                 ]
                 
                 results = list(attendance_collection.aggregate(pipeline))
                 attendance_count = len(results)
-                
-                print(f"[DEBUG] Pertemuan {i} ({meeting_date_str}): Found {attendance_count} attendance records")
                 
             except Exception as e:
                 print(f"[DEBUG] Error calculating attendance for Pertemuan {i}: {e}")
@@ -706,14 +696,19 @@ async def get_pertemuan_detail(
 
     meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
 
-    # Determine status
-    now_utc = datetime.now(timezone.utc)
-    current_date_obj = now_utc.date()
+    # Determine status (Adjusted Key Logic: UTC+7)
+    # Align "Current Real Time" to "Fake UTC Data Time" which is secretly Local Time.
+    now_wib = datetime.now(timezone.utc) + timedelta(hours=7)
+    current_date_obj = now_wib.date()
 
     if pertemuan_date < current_date_obj:
         status = "Selesai"
     elif pertemuan_date == current_date_obj:
-        current_time_str = now_utc.strftime("%H:%M")
+        current_time_str = now_wib.strftime("%H:%M")
+        
+        # DEBUG: Log logic for Sedang Berlangsung verification
+        print(f"[DEBUG STATUS] Pertemuan {pertemuan_ke}: Now(WIB)={current_time_str} vs Schedule(FakeUTC)={jam_awal_curr}-{jam_akhir_curr}")
+
         if jam_akhir_curr and current_time_str > jam_akhir_curr:
             status = "Selesai"
         elif jam_awal_curr and current_time_str < jam_awal_curr:
@@ -770,6 +765,8 @@ async def get_pertemuan_detail(
                 ts = record.get("timestamp")
                 if isinstance(ts, datetime):
                     ts = ts.isoformat()
+                elif isinstance(ts, str):
+                    pass
                 else:
                     ts = "-" # Manual record might not have timestamp if not set
                 attendance_records[uid] = ts
@@ -806,9 +803,15 @@ async def get_pertemuan_detail(
             for a in attendees:
                 uid = str(a.get("user_id"))
                 ts = a.get("timestamp")
-                # Return full ISO timestamp string instead of just time
+                
+                # Robust timestamp handling (Same as Rescheduled logic)
                 if isinstance(ts, datetime):
                     ts = ts.isoformat()
+                elif isinstance(ts, str):
+                    pass
+                else:
+                    ts = "-"
+                
                 # Store earliest timestamp if multiple
                 if uid not in attendance_records:
                     attendance_records[uid] = ts
@@ -981,19 +984,64 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
         # Use provided timestamp or default to Now (UTC)
         if payload.timestamp:
             try:
-                # Expecting ISO String ending in Z or compatible
-                ts_val = payload.timestamp
-                # If it's for Attendance (Auto), we might need strict format depending on how aggregations work.
-                # But aggregations use $toDate, so strict ISO string is fine.
-                # However, for consistent storage, let's keep it as String if logic demands, or Datetime.
-                # Attendance_Spesial logic used datetime.
-                # Attendance logic used string/datetime mix in previous code.
-                # Let's standardize on ISO String for Attendance, and keeping consistency for Spesial.
-                attendance_ts = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+                attendance_ts = datetime.fromisoformat(payload.timestamp.replace('Z', '+00:00'))
             except:
                 attendance_ts = datetime.now(timezone.utc)
         else:
              attendance_ts = datetime.now(timezone.utc)
+
+        # -------------------------------------------------------------
+        # CHECK: Cannot update attendance if class hasn't started yet!
+        # -------------------------------------------------------------
+        now_utc = datetime.now(timezone.utc)
+        start_datetime = None
+        jam_awal_check = None
+        pertemuan_date_check = None
+
+        if override_data:
+             # Logic for Rescheduled Date
+             if override_data.get("tanggal_kelas"):
+                 tk = override_data.get("tanggal_kelas")
+                 if isinstance(tk, datetime):
+                     pertemuan_date_check = tk.date()
+                 elif isinstance(tk, str):
+                     try:
+                        pertemuan_date_check = datetime.fromisoformat(tk.replace('Z', '+00:00')).date()
+                     except: pass
+             if override_data.get("jam_awal"): jam_awal_check = override_data.get("jam_awal")
+        else:
+            # Logic for Regular Date
+            tanggal_awal = matkul.get("tanggal_awal")
+            if isinstance(tanggal_awal, str):
+                tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+            if isinstance(tanggal_awal, datetime):
+                start_date = tanggal_awal.date()
+            else:
+                start_date = tanggal_awal
+            
+            pertemuan_date_check = start_date + timedelta(weeks=payload.pertemuan - 1)
+            jam_awal_check = matkul.get("jam_awal")
+
+        # Perform Check
+        if pertemuan_date_check and jam_awal_check:
+            # Construct comparison time
+            # ADJUSTMENT: Convert Real UTC to "Fake UTC/WIB" (+7 Hours)
+            # This aligns the Current Time with the Class Schedule Data (which is secretly Local Time)
+            now_wib = now_utc + timedelta(hours=7)
+            
+            current_date_obj = now_wib.date()
+            can_edit = False
+            
+            if pertemuan_date_check < current_date_obj:
+                can_edit = True
+            elif pertemuan_date_check == current_date_obj:
+                current_time_str = now_wib.strftime("%H:%M")
+                # If current time >= start time, it has started
+                if current_time_str >= jam_awal_check: 
+                    can_edit = True
+            
+            if not can_edit:
+                 raise HTTPException(status_code=400, detail="Cannot edit attendance: Class has not started yet (Belum Dimulai).")
 
 
         if override_data:
@@ -1072,9 +1120,9 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
             
             if payload.status:
                 # 2. INSERT NEW RECORD
-                # Format to ISO String with Z (Standard for Attendance Collection based on "unified" request)
-                ts_iso = attendance_ts.isoformat().replace("+00:00", "Z")
-                if not ts_iso.endswith("Z"): ts_iso += "Z"
+                # Format to ISO String with Z (Unified Format)
+                # Matches the format used for Rescheduled classes
+                ts_iso = attendance_ts.strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 
                 insert_doc = {
                     "class_id": class_id,
