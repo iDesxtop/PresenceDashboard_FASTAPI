@@ -317,12 +317,19 @@ async def get_attendance_distribution(current_user: dict = Depends(get_current_u
         raise HTTPException(status_code=400, detail="Invalid account ID")
 
     matkul_cursor = matkul_collection.find({"account_id": account_id})
-    distribution = []
+    class_stats: dict[str, dict] = {}
 
     for matkul in matkul_cursor:
         matkul_id = matkul.get("_id")
-        nama_matkul = matkul.get("nama_matkul", "Mata Kuliah" )
-        total_enrolled = rps_collection.count_documents({"matkul_id": matkul_id})
+        if not matkul_id:
+            continue
+
+        nama_matkul = matkul.get("nama_matkul", "Mata Kuliah")
+        class_key = str(matkul.get("class_id") or matkul_id)
+
+        # Hitung mahasiswa unik yang terdaftar pada matkul ini
+        enrolled_user_ids = [uid for uid in rps_collection.distinct("user_id", {"matkul_id": matkul_id}) if uid is not None]
+        total_enrolled = len(enrolled_user_ids)
 
         class_filters = build_class_match_filters(matkul.get("class_id"), matkul_id)
 
@@ -339,16 +346,26 @@ async def get_attendance_distribution(current_user: dict = Depends(get_current_u
 
         attendance_result = list(attendance_collection.aggregate(attendance_pipeline))
         attendance_count = attendance_result[0]["attendance_count"] if attendance_result else 0
+
+        if total_enrolled == 0 and attendance_count > 0:
+            total_enrolled = attendance_count
+
         percentage = round((attendance_count / total_enrolled) * 100, 2) if total_enrolled else 0
 
-        distribution.append({
+        stats_payload = {
             "matkul_id": str(matkul_id),
             "nama_matkul": nama_matkul,
             "attendance_count": attendance_count,
             "total_enrolled": total_enrolled,
             "attendance_percent": percentage,
-        })
+        }
 
+        existing = class_stats.get(class_key)
+        if (not existing) or (stats_payload["total_enrolled"] > existing["total_enrolled"]):
+            class_stats[class_key] = stats_payload
+
+    distribution = list(class_stats.values())
+    distribution.sort(key=lambda item: item["nama_matkul"])
     return distribution
 
 @router.get("/{matkul_id}/report-summary", tags=["Matkul"])
