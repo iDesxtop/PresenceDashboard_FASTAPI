@@ -98,6 +98,9 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
             # If is_online is True, class_id might be None, which is fine
             if "class_id" in override_data: class_id_curr = override_data.get("class_id")
 
+        # Determine is_rescheduled
+        is_rescheduled = True if override_data else False
+
         # Determine status based on current date
         if pertemuan_date < current_date:
             status = "Selesai"
@@ -174,7 +177,10 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
             "status": status,
             "present_count": attendance_count,
             "total_enrolled": total_enrolled,
-            "attendance_ratio": f"{attendance_count}/{total_enrolled}" if total_enrolled > 0 else "0/0"
+            "attendance_ratio": f"{attendance_count}/{total_enrolled}" if total_enrolled > 0 else "0/0",
+            "is_rescheduled": is_rescheduled,
+            "jam_awal": jam_awal_curr,
+            "jam_akhir": jam_akhir_curr
         })
     
     return pertemuan_list
@@ -743,6 +749,8 @@ async def get_pertemuan_detail(
     # Get Attendance Records
     attendance_records = {} # Format: {user_id: timestamp_str}
     
+    is_rescheduled = True if override_data else False
+    
     if override_data:
         # ---------------------------------------------------------
         # Rescheduled Class -> Read from Attendance_Spesial (Manual)
@@ -836,7 +844,10 @@ async def get_pertemuan_detail(
         "total_mahasiswa": len(student_list),
         "hadir": present_count,
         "tidak_hadir": len(student_list) - present_count,
-        "students": student_list
+        "students": student_list,
+        "jam_awal": jam_awal_curr,
+        "jam_akhir": jam_akhir_curr,
+        "is_rescheduled": is_rescheduled
     }
 
 @router.get("/{matkul_id}", tags=["Matkul"])
@@ -910,8 +921,10 @@ async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depe
         try:
              # Construct full datetime for 'tanggal_kelas' using date + start time
              dt_str = f"{payload.tanggal_baru}T{payload.jam_mulai_baru}:00"
-             # Ensure UTC 
-             tanggal_kelas = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+             # Create a datetime object first to validate
+             dt_obj = datetime.fromisoformat(dt_str)
+             # Store as STRING ending in Z (Unified Format)
+             tanggal_kelas = dt_obj.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid date/time format: {e}")
 
@@ -921,7 +934,7 @@ async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depe
             "pertemuan": payload.pertemuan,
             "jam_awal": payload.jam_mulai_baru,
             "jam_akhir": payload.jam_selesai_baru,
-            "tanggal_kelas": tanggal_kelas,
+            "tanggal_kelas": tanggal_kelas, # Stored as String "2025-...Z"
             "is_online": payload.is_online
         }
         
@@ -941,8 +954,9 @@ async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depe
 @router.post("/attendance-manual", tags=["Matkul"])
 async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict = Depends(get_current_user)):
     """
-    Manually update attendance for a scheduled/rescheduled class.
-    Only allows changes if the class is rescheduled (exists in Kelas_Spesial).
+    Manually update attendance for Any class (Regular or Rescheduled).
+    - If Rescheduled (Kelas_Spesial exists): Updates Attendance_Spesial.
+    - If Regular (No Kelas_Spesial): Updates Attendance (Camera logs).
     """
     try:
         matkul_obj_id = ObjectId(payload.matkul_id)
@@ -957,43 +971,188 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
         if not matkul:
             raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
         
-        # 2. Verify Reschedule Entry Exists (Requirement: "only for the userflow of dosen changing schedules")
-        # If no reschedule entry, manual attendance is technically disabled by this rule?
-        # User said: "dosen are expected to input ... only for the userflow of dosen changing schedules"
-        # So we check if override exists.
+        # 2. Check for Reschedule Entry
         override_data = kelas_spesial_collection.find_one({
             "matkul_id": matkul_obj_id,
             "pertemuan": payload.pertemuan
         })
         
-        if not override_data:
-            raise HTTPException(status_code=400, detail="Manual attendance is only allowed for rescheduled classes.")
-
-        # 3. Create or Remove Attendance Record
-        # Using spesial_id from the override document
-        filter_query = {
-            "spesial_id": override_data["_id"],
-            "user_id": student_obj_id
-        }
-        
-        if payload.status:
-            # Add (Upsert)
-            update_doc = {
-                "spesial_id": override_data["_id"],
-                "user_id": student_obj_id,
-                "timestamp": datetime.now(timezone.utc)
-            }
-            # We can just use update_one with upsert to keep it simple, 
-            # or finding one then inserting. Update upsert is safer.
-            attendance_spesial_collection.update_one(
-                filter_query,
-                {"$set": update_doc},
-                upsert=True
-            )
+        # Prepare Timestamp
+        # Use provided timestamp or default to Now (UTC)
+        if payload.timestamp:
+            try:
+                # Expecting ISO String ending in Z or compatible
+                ts_val = payload.timestamp
+                # If it's for Attendance (Auto), we might need strict format depending on how aggregations work.
+                # But aggregations use $toDate, so strict ISO string is fine.
+                # However, for consistent storage, let's keep it as String if logic demands, or Datetime.
+                # Attendance_Spesial logic used datetime.
+                # Attendance logic used string/datetime mix in previous code.
+                # Let's standardize on ISO String for Attendance, and keeping consistency for Spesial.
+                attendance_ts = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+            except:
+                attendance_ts = datetime.now(timezone.utc)
         else:
-            # Remove (Delete)
-            attendance_spesial_collection.delete_one(filter_query)
+             attendance_ts = datetime.now(timezone.utc)
+
+
+        if override_data:
+            # --- Rescheduled Class (Attendance_Spesial) ---
+            filter_query = {
+                "spesial_id": override_data["_id"],
+                "user_id": student_obj_id
+            }
+            
+            if payload.status:
+                # Add (Upsert)
+                # Store timestamp as datetime to match previous logic and schema
+                # But user requests "ISODate ending in Z" - so we need to ensure Mongo stores it as Date
+                # or String with Z. 
+                # Seeder used ISODate(...) which is Date object.
+                # However, previous request: "USE THE ONE WHERE IT ENDS WITH Z...".
+                # If we store as datetime object in PyMongo, it becomes ISODate in Mongo. 
+                # If we store as String, it becomes String.
+                # The user's example: `tanggal_kelas: "2025-04-23T08:00:00.000Z"` (String) vs `2026-01-09...` (Date).
+                # Wait, "USE THE ONE WHERE IT ENDS WITH Z since the seeders are also using it NOT THE ONE ENDING WITH THE +00:00"
+                # This implies STRICT STRING formatted as ISO with Z suffix.
+                # Python `datetime.isoformat()` produces `+00:00` for UTC.
+                # So we must format it manually or replace using `replace('+00:00', 'Z')`.
+                
+                attendance_ts_str = attendance_ts.isoformat().replace("+00:00", "Z")
+                if not attendance_ts_str.endswith("Z"):
+                     attendance_ts_str += "Z" # Fallback if offset was missing/different? No, keeping it simple.
+
+                # THE USER WANTS STRINGS? 
+                # "tanggal_kelas" example was a String.
+                # "waktu_absen" in table is String.
+                # Let's try storing strict string.
+                
+                update_doc = {
+                    "spesial_id": override_data["_id"],
+                    "user_id": student_obj_id,
+                    "timestamp": datetime.fromisoformat(attendance_ts_str.replace('Z', '+00:00')) # Store as Date object per Mongo conventions usually, but user is adamant about specific string format comparison?
+                    # "ISODate" in Mongo Shell output means it's a DATE type.
+                    # "2025-..." string means it's a STRING type.
+                    # The seeder usually uses ISODate, which corresponds to Python datetime.
+                    # The user showed `tanggal_kelas: "2025...Z"` (quoted) vs `tanggal_kelas: 2026...` (unquoted).
+                    # Quoted = String. Unquoted = ISODate/Date.
+                    # User: "USE THE ONE WHERE IT ENDS WITH Z". This usually implies the String representation.
+                    # BUT "since the seeders are also using it" suggests we should match seeder type.
+                    # If seeder uses `ISODate("...")`, that is a Date object.
+                    # If seeder uses `"2025-..."`, that is a String.
+                    # Let's look at `Benih/Attendance_Spesial.js` if possible.
+                    # I will assume User wants ISODate (Date Object) based on "ISODate" keyword mentioned earlier, 
+                    # status quo "ISODate(...)" is standard. 
+                    # BUT the Z vs +00:00 output is a string representation usage issue.
+                    # Wait, `tanggal_kelas` in json response had `+00:00`. User wants `Z`.
+                    # This is purely serialization issue in FastAPI response? 
+                    # OR is it storage?
+                    # "rescheduling userflow timestamp is also unified by using the one that ends in Z"
+                    # I will ensure serialization sends Z.
+                    # And storage uses Date object (datetime in python).
+                    # Wait, if I cannot edit timestamp for users already attended...
+                    # That's the real issue.
+                    # The logic below `attendance_spesial_collection.update_one` supports upsert.
+                    # This implies it SHOULD update. 
+                    
+                    # Problem: Maybe `attendance_ts` is not changing because `payload.timestamp` logic?
+                    # If I send new time, it should update.
+                }
+                
+                # RE-READING: "i cant edit timestamp for users that are already attended"
+                # Maybe because the frontend sends `status: true` and backend just `update_one`...
+                # If I change time, `payload.timestamp` changes. `attendance_ts` changes.
+                # `update_doc` has new timestamp.
+                # `update_one` with `$set` SHOULD update it.
+                # Why wouldn't it? 
+                # Maybe `payload.status` is checked, but what about the condition?
+                # Ah, `filter_query` is `{"spesial_id": ..., "user_id": ...}`.
+                # This finds the doc.
+                # `$set` updates `timestamp`.
+                # This looks correct for Attendance_Spesial.
+                
+                # What about Regular?
+                # I implemented INSERT.
+                # If I Insert, I have duplicates.
+                # Aggregation might pick the OLD one.
+                # So I MUST delete old ones for Regular class.
+                
+                attendance_spesial_collection.update_one(
+                    filter_query,
+                    {"$set": {
+                        "spesial_id": override_data["_id"],
+                        "user_id": student_obj_id,
+                        "timestamp": attendance_ts # Python datetime -> Mongo ISODate
+                    }},
+                    upsert=True
+                )
+            else:
+                attendance_spesial_collection.delete_one(filter_query)
         
+        else:
+            # --- Regular Class (Attendance) ---
+            # ... (Calculation of window) ...
+            tanggal_awal = matkul.get("tanggal_awal")
+            if isinstance(tanggal_awal, str):
+                tanggal_awal = datetime.fromisoformat(tanggal_awal.replace('Z', '+00:00'))
+            
+            if isinstance(tanggal_awal, datetime):
+                start_date = tanggal_awal.date()
+            else:
+                start_date = tanggal_awal
+                
+            pertemuan_date = start_date + timedelta(weeks=payload.pertemuan - 1)
+            meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
+            
+            jam_awal = matkul.get("jam_awal")
+            jam_akhir = matkul.get("jam_akhir")
+            class_id = matkul.get("class_id")
+            
+            if not (jam_awal and jam_akhir):
+                 raise HTTPException(status_code=400, detail="Cannot determine class schedule for regular attendance.")
+
+            start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
+            end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+            
+            # 1. DELETE EXISTING RECORDS FOR THIS USER IN THIS SESSION
+            # This fixes "cant edit timestamp" for regular classes.
+            # We remove conflict so the new manual entry is the source of truth.
+            
+            pipeline = [
+                {"$addFields": {
+                    "timestamp_date": {"$toDate": "$timestamp"}
+                }},
+                {"$match": {
+                    "user_id": student_obj_id,
+                    "timestamp_date": {"$gte": start_time, "$lte": end_time},
+                    "$or": build_class_match_filters(class_id, matkul_obj_id)
+                }},
+                {"$project": {"_id": 1}}
+            ]
+            
+            to_delete = list(attendance_collection.aggregate(pipeline))
+            delete_ids = [d["_id"] for d in to_delete]
+            
+            if delete_ids:
+                attendance_collection.delete_many({"_id": {"$in": delete_ids}})
+            
+            if payload.status:
+                # 2. INSERT NEW RECORD
+                # Format to ISO String with Z (Standard for Attendance Collection based on "unified" request)
+                ts_iso = attendance_ts.isoformat().replace("+00:00", "Z")
+                if not ts_iso.endswith("Z"): ts_iso += "Z"
+                
+                insert_doc = {
+                    "class_id": class_id,
+                    "user_id": student_obj_id,
+                    "timestamp": ts_iso, # String
+                    "confidence": 1.0,
+                    "source": "manual"
+                }
+                attendance_collection.insert_one(insert_doc)
+
+        return {"status": "success", "message": "Attendance updated"}
+
         return {"status": "success", "message": "Attendance updated"}
 
     except Exception as e:

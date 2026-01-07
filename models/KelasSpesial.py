@@ -43,3 +43,4 @@ class ManualAttendanceRequest(BaseModel):
     pertemuan: int
     student_id: str # User/Account ID (the student)
     status: bool # True = Hadir, False = Tidak Hadir
+    timestamp: Optional[str] = None # Optional timestamp for attendance (ISO String)
