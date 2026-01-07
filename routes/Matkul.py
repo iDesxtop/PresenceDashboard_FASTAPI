@@ -37,8 +37,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
 
 def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, current_date=None):
     """Calculate the status of 16 Pertemuan with attendance data using the same logic as Attendance API"""
+    now_utc = datetime.now(timezone.utc)
     if current_date is None:
-        current_date = datetime.now().date()
+        current_date = now_utc.date()
     
     # Convert tanggal_awal to date if it's datetime
     if isinstance(tanggal_awal, datetime):
@@ -101,7 +102,13 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
         if pertemuan_date < current_date:
             status = "Selesai"
         elif pertemuan_date == current_date:
-            status = "Sedang Berlangsung"
+            current_time_str = now_utc.strftime("%H:%M")
+            if jam_akhir_curr and current_time_str > jam_akhir_curr:
+                status = "Selesai"
+            elif jam_awal_curr and current_time_str < jam_awal_curr:
+                status = "Belum Dimulai"
+            else:
+                status = "Sedang Berlangsung"
         else:
             status = "Belum Dimulai"
         
@@ -694,11 +701,19 @@ async def get_pertemuan_detail(
     meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
 
     # Determine status
-    current_date_obj = datetime.now().date()
+    now_utc = datetime.now(timezone.utc)
+    current_date_obj = now_utc.date()
+
     if pertemuan_date < current_date_obj:
         status = "Selesai"
     elif pertemuan_date == current_date_obj:
-        status = "Sedang Berlangsung"
+        current_time_str = now_utc.strftime("%H:%M")
+        if jam_akhir_curr and current_time_str > jam_akhir_curr:
+            status = "Selesai"
+        elif jam_awal_curr and current_time_str < jam_awal_curr:
+            status = "Belum Dimulai"
+        else:
+            status = "Sedang Berlangsung"
     else:
         status = "Belum Dimulai"
 
