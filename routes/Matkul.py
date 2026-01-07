@@ -981,14 +981,17 @@ async def manual_attendance(payload: ManualAttendanceRequest, current_user: dict
         })
         
         # Prepare Timestamp
-        # Use provided timestamp or default to Now (UTC)
+        # Use provided timestamp or default to Now (WIB/Fake UTC)
+        # We need to default to the User's Local Time (WIB) because that's what the system treats as "Z" time.
+        now_wib_ts = datetime.now(timezone.utc) + timedelta(hours=7)
+        
         if payload.timestamp:
             try:
                 attendance_ts = datetime.fromisoformat(payload.timestamp.replace('Z', '+00:00'))
             except:
-                attendance_ts = datetime.now(timezone.utc)
+                attendance_ts = now_wib_ts
         else:
-             attendance_ts = datetime.now(timezone.utc)
+             attendance_ts = now_wib_ts
 
         # -------------------------------------------------------------
         # CHECK: Cannot update attendance if class hasn't started yet!
