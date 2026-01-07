@@ -107,5 +107,104 @@ db.Attendance.insertMany([
     "timestamp": "2026-01-29 15:32:10",
     "class_id": ObjectId("694f3f1b825e7bcbbe801d14"),
     "status": "Otomatis"
-  }
+  },
+
+  // ==========================================
+  // 5. SISTEM CERDAS (Senin, 2 Feb 2026, 07:00)
+  // Kehadiran menurun (3 mahasiswa hadir)
+  // ==========================================
+  {
+    "user_id": ObjectId("695b8c2b540a02b5137daea6"), // Bayu
+    "timestamp": "2026-02-02 06:57:48",
+    "class_id": ObjectId("694f3ef2825e7bcbbe801d0e"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c30540a02b5137daeb1"), // Danes
+    "timestamp": "2026-02-02 07:01:22",
+    "class_id": ObjectId("694f3ef2825e7bcbbe801d0e"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c33540a02b5137daebe"), // Ichsan
+    "timestamp": "2026-02-02 07:10:05",
+    "class_id": ObjectId("694f3ef2825e7bcbbe801d0e"),
+    "status": "Manual"
+  },
+
+  // ==========================================
+  // 6. COMPUTER VISION (Selasa, 3 Feb 2026, 09:30)
+  // Kehadiran maksimal (semua hadir)
+  // ==========================================
+  {
+    "user_id": ObjectId("695b8c2b540a02b5137daea6"), // Bayu
+    "timestamp": "2026-02-03 09:18:17",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c30540a02b5137daeb1"), // Danes
+    "timestamp": "2026-02-03 09:21:03",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c31540a02b5137daeb7"), // Faisal
+    "timestamp": "2026-02-03 09:24:55",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c33540a02b5137daebe"), // Ichsan
+    "timestamp": "2026-02-03 09:27:31",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c34540a02b5137daec7"), // Marco
+    "timestamp": "2026-02-03 09:29:03",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c36540a02b5137daed0"), // Rauf
+    "timestamp": "2026-02-03 09:30:55",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c37540a02b5137daed8"), // Yoga
+    "timestamp": "2026-02-03 09:31:12",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c39540a02b5137daee0"), // Yusuf
+    "timestamp": "2026-02-03 09:33:09",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+  {
+    "user_id": ObjectId("695b8c3b540a02b5137daee8"), // Zaki
+    "timestamp": "2026-02-03 09:35:41",
+    "class_id": ObjectId("694f3f07825e7bcbbe801d10"),
+    "status": "Otomatis"
+  },
+
+  // ==========================================
+  // 7. BASIS DATA NO-SQL (Rabu, 4 Feb 2026, 13:00)
+  // Pertemuan sepi (1 mahasiswa hadir)
+  // ==========================================
+  {
+    "user_id": ObjectId("695b8c31540a02b5137daeb7"), // Faisal
+    "timestamp": "2026-02-04 13:04:18",
+    "class_id": ObjectId("694f3f10825e7bcbbe801d12"),
+    "status": "Manual"
+  },
+
+  // ==========================================
+  // 8. STATISTIKA (Kamis, 5 Feb 2026, 15:30)
+  // Pertemuan tanpa kehadiran (0 hadir)
+  // ==========================================
+  // (Disengaja dibiarkan kosong untuk mensimulasikan pertemuan tanpa kehadiran)
 ]);
