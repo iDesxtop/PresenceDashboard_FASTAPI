@@ -596,9 +596,6 @@ async def get_matkul_report_summary(matkul_id: str, current_user: dict = Depends
             "kehadiran": pertemuan.get("attendance_ratio", f"{present_count}/{total_enrolled_value}"),
         })
 
-        if pertemuan.get("status") == "Belum Dimulai":
-            continue
-
         capacity = total_enrolled_value if total_enrolled_value else max(present_count, 1)
         percent = round((present_count / capacity) * 100, 2) if capacity else 0
         trend_data.append({
