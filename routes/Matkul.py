@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Depends
 from starlette.responses import JSONResponse
 from typing import List
-from config.configrations import matkul_collection, class_collection, db, users_collection
+from config.configrations import matkul_collection, class_collection, db, users_collection, kelas_spesial_collection
+from models.KelasSpesial import RescheduleRequest, KelasSpesialModel
 from bson import ObjectId
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
@@ -48,7 +49,8 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
     # Get total enrolled students for this Matkul
     try:
         matkul_obj_id = ObjectId(matkul_id)
-        total_enrolled = rps_collection.count_documents({"matkul_id": matkul_obj_id})
+        # Use distinct to count unique students, avoiding duplicates in RPS
+        total_enrolled = len(rps_collection.distinct("user_id", {"matkul_id": matkul_obj_id}))
     except Exception:
         total_enrolled = 0
     
@@ -69,6 +71,32 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
         # Calculate the date for this pertemuan (weekly intervals)
         pertemuan_date = start_date + timedelta(weeks=i-1)
         
+        # Check for overrides (Reschedule)
+        jam_awal_curr = jam_awal
+        jam_akhir_curr = jam_akhir
+        class_id_curr = class_id
+        
+        override_data = kelas_spesial_collection.find_one({
+            "matkul_id": matkul_obj_id,
+            "pertemuan": i
+        })
+        
+        if override_data:
+            if override_data.get("tanggal_kelas"):
+                tk = override_data.get("tanggal_kelas")
+                if isinstance(tk, datetime):
+                    pertemuan_date = tk.date()
+                elif isinstance(tk, str):
+                    try:
+                        pertemuan_date = datetime.fromisoformat(tk.replace('Z', '+00:00')).date()
+                    except:
+                        pass
+            
+            if override_data.get("jam_awal"): jam_awal_curr = override_data.get("jam_awal")
+            if override_data.get("jam_akhir"): jam_akhir_curr = override_data.get("jam_akhir")
+            # If is_online is True, class_id might be None, which is fine
+            if "class_id" in override_data: class_id_curr = override_data.get("class_id")
+
         # Determine status based on current date
         if pertemuan_date < current_date:
             status = "Selesai"
@@ -79,12 +107,12 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
         
         # Get attendance count using the same logic as the working Attendance API
         attendance_count = 0
-        if class_id and jam_awal and jam_akhir and (status == "Selesai" or status == "Sedang Berlangsung"):
+        if jam_awal_curr and jam_akhir_curr and (status == "Selesai" or status == "Sedang Berlangsung"):
             try:
                 # Use the same datetime parsing logic as the working API
                 meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
-                start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
-                end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+                start_time = datetime.strptime(f"{meeting_date_str} {jam_awal_curr}", "%Y-%m-%d %H:%M")
+                end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir_curr}", "%Y-%m-%d %H:%M")
                 
                 # Use the same aggregation pipeline as the working API
                 pipeline = [
@@ -93,10 +121,7 @@ def calculate_pertemuan_with_attendance(tanggal_awal, matkul_id, matkul_name, cu
                     }},
                     {"$match": {
                         "timestamp_date": {"$gte": start_time, "$lte": end_time},
-                        "$or": [
-                            {"class_id": str(class_id)},
-                            {"class_id": class_id}
-                        ]
+                        "$or": build_class_match_filters(class_id_curr, matkul_obj_id)
                     }},
                     {"$lookup": {
                         "from": "Users",
@@ -630,6 +655,31 @@ async def get_pertemuan_detail(
 
     # Calculate meeting date
     pertemuan_date = start_date + timedelta(weeks=pertemuan_ke - 1)
+    
+    # Check for overrides
+    jam_awal_curr = jam_awal
+    jam_akhir_curr = jam_akhir
+    class_id_curr = class_id
+    
+    override_data = kelas_spesial_collection.find_one({
+        "matkul_id": matkul_obj_id, 
+        "pertemuan": pertemuan_ke
+    })
+    
+    if override_data:
+        if override_data.get("tanggal_kelas"):
+             tk = override_data.get("tanggal_kelas")
+             if isinstance(tk, datetime):
+                 pertemuan_date = tk.date()
+             elif isinstance(tk, str):
+                 try:
+                     pertemuan_date = datetime.fromisoformat(tk.replace('Z', '+00:00')).date()
+                 except: 
+                     pass
+        if override_data.get("jam_awal"): jam_awal_curr = override_data.get("jam_awal")
+        if override_data.get("jam_akhir"): jam_akhir_curr = override_data.get("jam_akhir")
+        if "class_id" in override_data: class_id_curr = override_data.get("class_id")
+
     meeting_date_str = pertemuan_date.strftime("%Y-%m-%d")
 
     # Determine status
@@ -644,13 +694,15 @@ async def get_pertemuan_detail(
     # Get Enrolled Students
     enrolled_docs = list(rps_collection.find({"matkul_id": matkul_obj_id}))
     
-    unique_user_ids = {}
+    unique_user_ids = []
+    seen_ids = set()
     for doc in enrolled_docs:
         uid = normalize_object_id(doc.get("user_id"))
-        if uid:
-            unique_user_ids[str(uid)] = uid
+        if uid and str(uid) not in seen_ids:
+            seen_ids.add(str(uid))
+            unique_user_ids.append(uid)
             
-    user_ids = list(unique_user_ids.values())
+    user_ids = unique_user_ids
     
     # Fetch User Details
     user_map = {}
@@ -664,10 +716,11 @@ async def get_pertemuan_detail(
 
     # Get Attendance Records if finished or ongoing
     attendance_records = {}
-    if class_id and jam_awal and jam_akhir:
+    # Use current params (handling rescheduled times/classes)
+    if jam_awal_curr and jam_akhir_curr:
         try:
-            start_time = datetime.strptime(f"{meeting_date_str} {jam_awal}", "%Y-%m-%d %H:%M")
-            end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir}", "%Y-%m-%d %H:%M")
+            start_time = datetime.strptime(f"{meeting_date_str} {jam_awal_curr}", "%Y-%m-%d %H:%M")
+            end_time = datetime.strptime(f"{meeting_date_str} {jam_akhir_curr}", "%Y-%m-%d %H:%M")
             
             pipeline = [
                 {"$addFields": {
@@ -675,7 +728,7 @@ async def get_pertemuan_detail(
                 }},
                 {"$match": {
                     "timestamp_date": {"$gte": start_time, "$lte": end_time},
-                    "$or": build_class_match_filters(class_id, matkul_obj_id)
+                    "$or": build_class_match_filters(class_id_curr, matkul_obj_id)
                 }},
                 {"$project": {
                     "user_id": 1,
@@ -758,3 +811,70 @@ async def get_matkul_by_id(matkul_id: str, current_user: dict = Depends(get_curr
             pass
     
     return JSONResponse(content=matkul_normalized)
+
+@router.post("/reschedule", tags=["Matkul"])
+async def reschedule_class(payload: RescheduleRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Reschedule or move a class meeting.
+    If is_online is True, class_id will be set to None.
+    Creates or updates a Kelas_Spesial entry.
+    """
+    try:
+        matkul_obj_id = ObjectId(payload.matkul_id)
+        # Verify ownership
+        account_id = ObjectId(current_user["account_id"])
+        
+        matkul = matkul_collection.find_one({
+            "_id": matkul_obj_id,
+            "account_id": account_id
+        })
+        
+        if not matkul:
+            raise HTTPException(status_code=404, detail="Matkul not found or not authorized")
+
+        class_obj_id = None
+        if not payload.is_online and payload.class_id:
+            try:
+                class_obj_id = ObjectId(payload.class_id)
+                # Verify class exists
+                if not class_collection.find_one({"_id": class_obj_id}):
+                     raise HTTPException(status_code=404, detail="Classroom not found")
+            except:
+                 raise HTTPException(status_code=400, detail="Invalid Class ID")
+        
+        # Prepare data
+        query = {
+            "matkul_id": matkul_obj_id,
+            "pertemuan": payload.pertemuan
+        }
+        
+        # Parse datetime for validation/storage
+        try:
+             # Construct full datetime for 'tanggal_kelas' using date + start time
+             dt_str = f"{payload.tanggal_baru}T{payload.jam_mulai_baru}:00"
+             tanggal_kelas = datetime.fromisoformat(dt_str)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid date/time format: {e}")
+
+        update_data = {
+            "matkul_id": matkul_obj_id,
+            "class_id": class_obj_id, # Null if online
+            "pertemuan": payload.pertemuan,
+            "jam_awal": payload.jam_mulai_baru,
+            "jam_akhir": payload.jam_selesai_baru,
+            "tanggal_kelas": tanggal_kelas,
+            "is_online": payload.is_online
+        }
+        
+        # Upsert
+        result = kelas_spesial_collection.update_one(
+            query, 
+            {"$set": update_data}, 
+            upsert=True
+        )
+        
+        return {"status": "success", "message": "Class rescheduled successfully"}
+        
+    except Exception as e:
+        print(f"Error rescheduling: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
